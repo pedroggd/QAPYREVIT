@@ -516,6 +516,7 @@ def executar_fluxo_isometrico():
             break
 
     grupos   = []
+    
     contador = 1
 
     while True:

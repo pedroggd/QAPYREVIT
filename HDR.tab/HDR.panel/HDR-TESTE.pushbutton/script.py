@@ -270,7 +270,7 @@ class CalloutConfigWindow(Window):
         self.txt_prefixo.FontSize = 12
         self.txt_prefixo.Padding  = Thickness(6, 4, 6, 4)
         self.txt_prefixo.Margin   = Thickness(0, 0, 0, 12)
-        self.txt_prefixo.Text     = "DETALHE"
+        self.txt_prefixo.Text     = "DET."
         pnl.Children.Add(self.txt_prefixo)
 
         self._lbl(pnl, "Identificador do Contador (ex: 'S', 'H' ou deixe vazio):", 11, bold=True, mg=(0, 0, 0, 4))
@@ -489,6 +489,9 @@ class CalloutConfigWindow(Window):
         self.Close()
 
 def executar_fluxo_callout():
+    import time
+    inicio = time.time()    
+
     active_view = doc.ActiveView
     _tipos_invalidos = {
         ViewType.DrawingSheet, ViewType.ProjectBrowser,
@@ -899,15 +902,15 @@ def executar_fluxo_callout():
                             label_h = lbl_outline.MaximumPoint.Y - lbl_outline.MinimumPoint.Y
                 except:
                     pass
-
+                LABEL_H_MIN = 15*mm
                 vp_infos.append({
                     "vp":      vp,
                     "view_id": v.Id,
                     "box_w":   box_w,
                     "box_h":   box_h,
-                    "label_h": label_h,
+                    "label_h": label_h, 
                     "slot_w":  box_w,
-                    "slot_h":  box_h + label_h,
+                    "slot_h":  box_h + label_h, #box_h + max(label_h, LABEL_H_MIN)
                     "nome":    v.Name,
                 })
 
@@ -924,24 +927,30 @@ def executar_fluxo_callout():
             # PASSO 2 — Grade ótima: calcula ncols/nrows com base no maior
             #           viewport. Distribui igualmente entre pranchas.
             # ----------------------------------------------------------------
-            area_w  = ux_max - ux_min
-            area_h  = uy_max - uy_min
-            ref_sw  = max(vi["slot_w"] for vi in vp_infos)
-            ref_sh  = max(vi["slot_h"] for vi in vp_infos)
+            # ----------------------------------------------------------------
+            # PASSO 2 — Bin packing: vai adicionando viewports e abre nova
+            #           prancha quando não couber mais.
+            # ----------------------------------------------------------------
+            area_w = ux_max - ux_min
+            area_h = uy_max - uy_min
 
-            ncols = max(1, int((area_w + espacamento) / (ref_sw + espacamento)))
-            nrows = max(1, int((area_h + MARGEM_ENTRE_LINHAS) / (ref_sh + MARGEM_ENTRE_LINHAS)))
-            cap   = ncols * nrows
-            total = len(vp_infos)
-
-            n_pranchas = max(1, int(_math.ceil(total / float(cap))))
-
+            grupo_atual = []
             grupos_prancha = []
-            restante = list(vp_infos)
-            for _p in range(n_pranchas):
-                qtd = int(_math.ceil(len(restante) / float(n_pranchas - _p)))
-                grupos_prancha.append(restante[:qtd])
-                restante = restante[qtd:]
+
+            for vi in vp_infos:
+                grupo_atual.append(vi)
+
+                ref_sw_p = max(v["slot_w"] for v in grupo_atual) 
+                ref_sh_p = max(v["slot_h"] for v in grupo_atual) 
+                ncols_t = max(1, int((area_w + espacamento) / (ref_sw_p + espacamento)))
+                nrows_t = max(1, int((area_h + MARGEM_ENTRE_LINHAS) / (ref_sh_p + MARGEM_ENTRE_LINHAS)))
+
+                if len(grupo_atual) > ncols_t * nrows_t:
+                    grupos_prancha.append(grupo_atual[:-1])
+                    grupo_atual = [vi]
+
+            if grupo_atual:
+                grupos_prancha.append(grupo_atual)
 
             # ----------------------------------------------------------------
             # PASSO 3 — Posicionamento com espaçamento uniforme e centralizado.
@@ -979,7 +988,7 @@ def executar_fluxo_callout():
                     vi["box_h"]  = bh
                     vi["label_h"] = lh
                     vi["slot_w"] = bw
-                    vi["slot_h"] = bh + lh
+                    vi["slot_h"] = bh + lh #bh + max(lh, LABEL_H_MIN)
 
             primeira_prancha = sheet
 
@@ -996,6 +1005,10 @@ def executar_fluxo_callout():
                 area_h_p = uy_max_p - uy_min_p
 
                 # Divide o grupo em linhas de ncols
+                # Recalcula ncols pro grupo desta prancha
+                ref_sw_p = sum(vi["slot_w"] for vi in grupo) / len(grupo)
+                ncols = max(1, int((area_w_p + espacamento) / (ref_sw_p + espacamento)))
+
                 linhas_g = [grupo[i:i + ncols] for i in range(0, len(grupo), ncols)]
                 n_lin    = len(linhas_g)
 
@@ -1003,9 +1016,10 @@ def executar_fluxo_callout():
                 tot_h    = sum(alt_lins)
 
                 # gap_y uniforme, nunca menor que MARGEM_ENTRE_LINHAS
+                GAP_Y_MAX = 40.0 * mm
                 if n_lin > 1:
-                    gap_y = max(MARGEM_ENTRE_LINHAS,
-                                (area_h_p - tot_h) / float(n_lin - 1))
+                    gap_y = min(GAP_Y_MAX, max(MARGEM_ENTRE_LINHAS,
+                                (area_h_p - tot_h) / float(n_lin - 1)))
                 else:
                     gap_y = 0.0
 
@@ -1018,9 +1032,10 @@ def executar_fluxo_callout():
                     tot_w  = sum(vi["slot_w"] for vi in linha)
 
                     # gap_x uniforme, nunca menor que espacamento
+                    GAP_X_MAX = 20.0 * mm
                     if n_col > 1:
-                        gap_x = max(espacamento,
-                                    (area_w_p - tot_w) / float(n_col - 1))
+                        gap_x = min(GAP_X_MAX, max(espacamento,
+                                    (area_w_p - tot_w) / float(n_col - 1)))
                     else:
                         gap_x = 0.0
 
@@ -1045,7 +1060,11 @@ def executar_fluxo_callout():
                             ol2      = vp.GetBoxOutline()
                             center_y = (ol2.MaximumPoint.Y + ol2.MinimumPoint.Y) / 2.0
                             bottom_y = ol2.MinimumPoint.Y
-                            vp.LabelOffset = XYZ(0.0, bottom_y - center_y - (-100.0 * mm), 0)
+
+                            GAP_LABEL = 2 * mm
+                            vp.LabelOffset = XYZ(0.0, bottom_y - center_y - GAP_LABEL, 0)
+
+                            #vp.LabelOffset = XYZ(0.0, bottom_y - center_y - (-100.0 * mm), 0)
                             doc.Regenerate()
 
                         except Exception as e:
@@ -1059,7 +1078,11 @@ def executar_fluxo_callout():
             t.Commit()
         tg.Assimilate()
 
+        tempo = time.time() - inicio
+    mins = int(tempo // 60)
+    segs = int(tempo % 60)
     msg = "Concluido! {} vistas criadas e paginadas.".format(len(vistas_geradas))
+    msg += "\n\nTempo de execução: {}m {}s".format(mins, segs)
     if erros_callout:
         msg += "\n\nAvisos ({}):\n{}".format(len(erros_callout), "\n".join(erros_callout))
     forms.alert(msg)
