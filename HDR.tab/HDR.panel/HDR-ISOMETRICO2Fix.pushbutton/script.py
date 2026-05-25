@@ -75,6 +75,32 @@ def remove_accents(s):
 def sanitize_name(name):
     return re.sub(r'[\\:\{\}\[\]|;<>?\'~]', '-', name).strip()
 
+def _proximo_contador(prefixo, identificador, num_inicial, sufixo):
+    maior_num = num_inicial - 1
+    for v in FilteredElementCollector(doc).OfClass(DB.View):
+        if v.IsTemplate: continue
+        
+        p_pref = re.escape(prefixo) if prefixo else ""
+        p_ident = re.escape(identificador) if identificador else ""
+        p_suf = re.escape(sufixo) if sufixo else ""
+        
+        pattern = r'^'
+        if p_pref: pattern += p_pref + r'\s*'
+        if p_ident: pattern += p_ident
+        pattern += r'(\d+)'
+        if p_suf: pattern += r'\s*' + p_suf
+        pattern += r'$'
+        
+        match = re.search(pattern, v.Name, re.IGNORECASE)
+        if match:
+            try:
+                num = int(match.group(1))
+                if num > maior_num:
+                    maior_num = num
+            except:
+                pass
+    return maior_num + 1
+
 def get_unique_view_name(base_name):
     existing = {v.Name for v in FilteredElementCollector(doc).OfClass(DB.View)}
     if base_name not in existing:
@@ -255,7 +281,7 @@ class IsometricConfigWindow(Window):
         self.txt_prefixo.FontSize = 12
         self.txt_prefixo.Padding  = Thickness(6, 4, 6, 4)
         self.txt_prefixo.Margin   = Thickness(0, 0, 0, 12)
-        self.txt_prefixo.Text     = "DETALHE"
+        self.txt_prefixo.Text     = "DET."
         pnl.Children.Add(self.txt_prefixo)
 
         self._lbl(pnl, "Identificador (ex: 'H', 'S', ou vazio):", 11, bold=True, mg=(0, 0, 0, 4))
@@ -276,7 +302,7 @@ class IsometricConfigWindow(Window):
         self.txt_num_inicial = TextBox()
         self.txt_num_inicial.FontSize = 12
         self.txt_num_inicial.Padding  = Thickness(6, 4, 6, 4)
-        self.txt_num_inicial.Text     = "1"
+        self.txt_num_inicial.Text     = "01"
         pnl_num.Children.Add(self.txt_num_inicial)
         Grid.SetColumn(pnl_num, 0); g_cont.Children.Add(pnl_num)
 
@@ -531,10 +557,11 @@ def executar_fluxo_isometrico():
             break
 
     grupos   = []
-    contador = 1
+    contador = _proximo_contador(prefixo, identificador, num_inicial, sufixo)
+    contador_inicial = contador
 
     while True:
-        numero_str    = str(num_inicial + contador - 1).zfill(zeros)
+        numero_str    = str(contador).zfill(zeros)
         contador_full = "%s%s" % (identificador, numero_str)
         partes        = [prefixo, contador_full, sufixo]
         nome_preview  = " ".join([p for p in partes if p])
@@ -577,7 +604,7 @@ def executar_fluxo_isometrico():
         tg.Start()
 
         for idx, box in enumerate(grupos):
-            numero_str    = str(num_inicial + idx).zfill(zeros)
+            numero_str    = str(contador_inicial + idx).zfill(zeros)
             contador_full = "%s%s" % (identificador, numero_str)
             
             partes = [prefixo, contador_full, sufixo]
@@ -658,7 +685,7 @@ def executar_fluxo_isometrico():
                 vistas_geradas.append({
                     "id": novo_id,
                     "placeholder_id": placeholder_id,
-                    "numero_detalhe": num_inicial + idx
+                    "numero_detalhe": contador_inicial + idx
                 })
 
         if not vistas_geradas:
@@ -762,21 +789,24 @@ def executar_fluxo_isometrico():
                     
                     if vp_fantasma:
                         vp_fantasma_id = vp_fantasma.Id
-                        num_base = info["numero_detalhe"]
-                        numero_formatado = str(num_base).zfill(zeros)
-                        try:
-                            vp_fantasma.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER).Set(numero_formatado)
-                        except:
-                            pass
+                        vista_fantasma = doc.GetElement(placeholder_id)
+                        if vista_fantasma:
+                            p_det_f = vista_fantasma.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                            if p_det_f and not p_det_f.IsReadOnly:
+                                p_det_f.Set(vista_fantasma.Name.split()[1])
+                        
                         vp_3d = Viewport.Create(doc, sheet.Id, v_3d.Id, XYZ(0, 0, 0))
                         doc.Regenerate()
                         if vp_3d:
-                            p_3d = vp_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                            p_3d = v_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
                             if p_3d and not p_3d.IsReadOnly:
-                                p_3d.Set(numero_formatado + u"​")
+                                p_3d.Set(v_3d.Name.split()[1] + u"​")
                 else:
                     vp_3d = Viewport.Create(doc, sheet.Id, v_3d.Id, XYZ(0, 0, 0))
                     doc.Regenerate()
+                    p_3d = v_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                    if p_3d and not p_3d.IsReadOnly:
+                        p_3d.Set(v_3d.Name.split()[1])
 
                 if vp_3d and vp_type_id != ElementId.InvalidElementId:
                     vp_3d.ChangeTypeId(vp_type_id)
@@ -811,7 +841,6 @@ def executar_fluxo_isometrico():
                 else:
                     vp_infos.append(None)
 
-            # Filtra Nones
             vp_infos = [vi for vi in vp_infos if vi is not None]
 
             if not vp_infos:
@@ -820,11 +849,6 @@ def executar_fluxo_isometrico():
                 forms.alert("Nenhum viewport pôde ser criado.")
                 return
 
-            # ------------------------------------------------------------------
-            # GRADE ÓTIMA: calcula ncols/nrows com base no maior isométrico.
-            # Distribui ceil(restante/pranchas_restantes) por prancha para
-            # nunca deixar uma prancha com muito menos que as outras.
-            # ------------------------------------------------------------------
             import math as _math
 
             area_w = ux_max - ux_min
@@ -846,14 +870,7 @@ def executar_fluxo_isometrico():
                 grupos_prancha.append(restante[:qtd])
                 restante = restante[qtd:]
 
-            # ------------------------------------------------------------------
-            # POSICIONAMENTO: espaçamento uniforme X e Y, centralizado na prancha.
-            # LabelOffset: relê outline APÓS o move, usa só box_h.
-            # Ao mudar de prancha, recria viewports + fantasmas corretamente.
-            # ------------------------------------------------------------------
-
             def _recriar_vp_na_prancha(sh_dest, vi):
-                """Deleta vp (e fantasma) existente e recria tudo na nova prancha."""
                 if vi.get("vp_fantasma_id"):
                     try:
                         doc.Delete(vi["vp_fantasma_id"])
@@ -875,20 +892,28 @@ def executar_fluxo_isometrico():
                     doc.Regenerate()
                     if vp_f:
                         new_fantasma_id = vp_f.Id
-                        num_fmt = str(vi["numero_detalhe"]).zfill(zeros)
-                        try:
-                            vp_f.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER).Set(num_fmt)
-                        except:
-                            pass
+                        vista_fantasma = doc.GetElement(ph_id)
+                        if vista_fantasma:
+                            p_det_f = vista_fantasma.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                            if p_det_f and not p_det_f.IsReadOnly:
+                                p_det_f.Set(vista_fantasma.Name.split()[1])
+                        
                         new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
                         doc.Regenerate()
                         if new_vp:
-                            p_3d = new_vp.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
-                            if p_3d and not p_3d.IsReadOnly:
-                                p_3d.Set(num_fmt + u"​")
+                            vista_3d = doc.GetElement(vi["view_id"])
+                            if vista_3d:
+                                p_3d = vista_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                                if p_3d and not p_3d.IsReadOnly:
+                                    p_3d.Set(vista_3d.Name.split()[1] + u"​")
                 else:
                     new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
                     doc.Regenerate()
+                    vista_3d = doc.GetElement(vi["view_id"])
+                    if vista_3d:
+                        p_3d = vista_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                        if p_3d and not p_3d.IsReadOnly:
+                            p_3d.Set(vista_3d.Name.split()[1])
 
                 if new_vp and vp_type_id != ElementId.InvalidElementId:
                     new_vp.ChangeTypeId(vp_type_id)
@@ -927,20 +952,17 @@ def executar_fluxo_isometrico():
                 area_w_p = ux_max_p - ux_min_p
                 area_h_p = uy_max_p - uy_min_p
 
-                # Divide em linhas respeitando ncols
                 linhas_g = [grupo[i:i + ncols] for i in range(0, len(grupo), ncols)]
                 n_lin    = len(linhas_g)
 
                 alt_lins = [max(vi["slot_h"] for vi in ln) for ln in linhas_g]
                 tot_h    = sum(alt_lins)
 
-                # gap_y uniforme, nunca menor que MARGEM_ENTRE_LINHAS
                 if n_lin > 1:
                     gap_y = max(MARGEM_ENTRE_LINHAS, (area_h_p - tot_h) / float(n_lin - 1))
                 else:
                     gap_y = 0.0
 
-                # Centraliza verticalmente
                 bloco_h = tot_h + gap_y * (n_lin - 1)
                 cur_y_p = uy_max_p - (area_h_p - bloco_h) / 2.0
 
@@ -949,13 +971,11 @@ def executar_fluxo_isometrico():
                     n_col  = len(linha)
                     tot_w  = sum(vi["slot_w"] for vi in linha)
 
-                    # gap_x uniforme, nunca menor que espacamento
                     if n_col > 1:
                         gap_x = max(espacamento, (area_w_p - tot_w) / float(n_col - 1))
                     else:
                         gap_x = 0.0
 
-                    # Centraliza horizontalmente
                     bloco_w = tot_w + gap_x * (n_col - 1)
                     cur_x_p = ux_min_p + (area_w_p - bloco_w) / 2.0
                     base_y  = cur_y_p - rh_max
@@ -972,8 +992,6 @@ def executar_fluxo_isometrico():
                                     base_y  - ol.MinimumPoint.Y, 0))
                             doc.Regenerate()
 
-                            # Relê outline APÓS o move; usa só box_h
-                            # para não acumular label_h no offset.
                             ol2   = vp.GetBoxOutline()
                             bh_mv = ol2.MaximumPoint.Y - ol2.MinimumPoint.Y
                             ol2 = vp.GetBoxOutline()
