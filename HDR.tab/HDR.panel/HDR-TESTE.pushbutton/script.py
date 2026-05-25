@@ -887,6 +887,12 @@ def executar_fluxo_callout():
                 vp = Viewport.Create(doc, sheet.Id, v.Id, XYZ(0, 0, 0))
                 doc.Regenerate()
 
+                # ✅ Fix Detail Number: seta o número correto no bubble do callout
+                p_det = v.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                if p_det and not p_det.IsReadOnly:
+                    p_det.Set(v.Name.split()[1])
+                doc.Regenerate()
+
                 if vp_type_id != ElementId.InvalidElementId:
                     vp.ChangeTypeId(vp_type_id)
                     doc.Regenerate()
@@ -966,6 +972,14 @@ def executar_fluxo_callout():
                     pass
 
                 new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
+                doc.Regenerate()
+
+                # ✅ Fix Detail Number: seta o número correto no bubble do callout
+                vista_elem = doc.GetElement(vi["view_id"])
+                if vista_elem:
+                    p_det = vista_elem.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                    if p_det and not p_det.IsReadOnly:
+                        p_det.Set(vi["nome"].split()[1])
                 doc.Regenerate()
 
                 if new_vp and vp_type_id != ElementId.InvalidElementId:
