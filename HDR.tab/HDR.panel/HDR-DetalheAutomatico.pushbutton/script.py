@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__title__ = "Criar\nDetalhes+"
+__title__ = "Auto\nDetalhe2D"
 __author__ = "PyRevit Plugin"
 
 import clr
@@ -270,7 +270,7 @@ class CalloutConfigWindow(Window):
         self.txt_prefixo.FontSize = 12
         self.txt_prefixo.Padding  = Thickness(6, 4, 6, 4)
         self.txt_prefixo.Margin   = Thickness(0, 0, 0, 12)
-        self.txt_prefixo.Text     = "DETALHE"
+        self.txt_prefixo.Text     = "DET."
         pnl.Children.Add(self.txt_prefixo)
 
         self._lbl(pnl, "Identificador do Contador (ex: 'S', 'H' ou deixe vazio):", 11, bold=True, mg=(0, 0, 0, 4))
@@ -489,6 +489,9 @@ class CalloutConfigWindow(Window):
         self.Close()
 
 def executar_fluxo_callout():
+    import time
+    inicio = time.time()    
+
     active_view = doc.ActiveView
     _tipos_invalidos = {
         ViewType.DrawingSheet, ViewType.ProjectBrowser,
@@ -543,7 +546,35 @@ def executar_fluxo_callout():
 
     vistas_geradas = []
     erros_callout  = []
-    contador       = 1
+
+    # ----------------------------------------------------------------
+    # Detecta o próximo número disponível para o sufixo atual.
+    # Varre todas as vistas existentes que combinem com
+    # "prefixo <identificador><N> sufixo" e continua a partir do maior N+1.
+    # Se o sufixo mudar (outro pavimento), começa do num_inicial.
+    # ----------------------------------------------------------------
+    def _proximo_contador(prefixo, identificador, sufixo, zeros, num_inicial):
+        pattern = re.compile(
+            r'^' + re.escape(prefixo) +
+            (r'\s+' if prefixo else r'') +
+            re.escape(identificador) +
+            r'(\d+)' +
+            (r'\s+' + re.escape(sufixo) if sufixo else r'') +
+            r'$'
+        )
+        maior = num_inicial - 1
+        for v in FilteredElementCollector(doc).OfClass(DB.View):
+            m = pattern.match(v.Name.strip())
+            if m:
+                try:
+                    n = int(m.group(1))
+                    if n > maior:
+                        maior = n
+                except:
+                    pass
+        return maior + 1
+
+    contador = _proximo_contador(prefixo, identificador, sufixo, zeros, num_inicial)
 
     caixas_desenhadas = []
     while True:
@@ -763,62 +794,15 @@ def executar_fluxo_callout():
             t.Start()
             doc.Regenerate()
 
-            mm              = 1.0 / 304.8
-            margem_esq      = 25.0  * mm
-            margem_sup      = 15.0  * mm
-            margem_inf      = 15.0  * mm
-            espacamento     = 10.0  * mm   # Espacamento horizontal entre viewports
-            MARGEM_ENTRE_LINHAS = 20.0 * mm  # Espaco vertical extra ENTRE linhas (alem do titulo)
-            ALTURA_TITULO   = 12.0  * mm   # Altura estimada do bloco de titulo do viewport
+            import math as _math
 
-            def _calcular_margem_dir(sh, tb_instance, bb_sh):
-                """
-                Calcula margem_dir medindo a distancia entre o viewport de conteudo
-                mais a direita e a borda direita da folha.
-                A logica: coleta todos os viewports da prancha, ignora os que estao
-                claramente dentro da area do carimbo (bonecos/legenda), e usa o
-                limite direito do conteudo para inferir onde o carimbo comeca.
-                Fallback: 180mm (valor seguro para qualquer formato EBSERH).
-                """
-                FALLBACK_MM = 180.0
-                try:
-                    vps_sh = (FilteredElementCollector(doc, sh.Id)
-                              .OfClass(Viewport)
-                              .ToElements())
-                    if not vps_sh:
-                        return FALLBACK_MM * mm
-
-                    folha_max_x = bb_sh.Max.X   # borda direita da folha em pes
-
-                    # Pega o outline de cada viewport e guarda o MaxX
-                    max_x_list = []
-                    for vp in vps_sh:
-                        try:
-                            ol = vp.GetBoxOutline()
-                            max_x_list.append(ol.MaximumPoint.X)
-                        except:
-                            pass
-
-                    if not max_x_list:
-                        return FALLBACK_MM * mm
-
-                    # O viewport mais a direita provavelmente e do carimbo.
-                    # O segundo mais a direita e o limite da area util.
-                    max_x_list.sort(reverse=True)
-                    if len(max_x_list) >= 2:
-                        conteudo_max_x = max_x_list[1]
-                    else:
-                        conteudo_max_x = max_x_list[0]
-
-                    margem_calculada = folha_max_x - conteudo_max_x
-                    # Sanitizar: valor minimo de 100mm, maximo de 500mm
-                    margem_mm = margem_calculada / mm
-                    if margem_mm < 100.0 or margem_mm > 500.0:
-                        return FALLBACK_MM * mm
-                    # Adicionar pequena folga (5mm) para nao cortar labels
-                    return (margem_mm + 5.0) * mm
-                except:
-                    return FALLBACK_MM * mm
+            mm                  = 1.0 / 304.8
+            margem_esq          = 25.0 * mm
+            margem_sup          = 15.0 * mm
+            margem_inf          = 15.0 * mm
+            MARGEM_CORTE        = 5.0  * mm   # Borda de corte da folha (padrão ABNT)
+            espacamento         = 10.0 * mm   # Gap minimo horizontal entre viewports
+            MARGEM_ENTRE_LINHAS = 20.0 * mm   # Gap minimo vertical entre linhas
 
             def nova_prancha():
                 sh = ViewSheet.Create(doc, tb_type_id)
@@ -850,31 +834,44 @@ def executar_fluxo_callout():
                 if not bb_sh:
                     raise Exception("BoundingBox None.")
 
-                # Regenera para garantir viewports do carimbo visiveis
                 doc.Regenerate()
-                margem_dir = _calcular_margem_dir(sh, tb_instance, bb_sh)
+
+                # Calcula ux_max dinamicamente: viewport do carimbo mais à esquerda - 5mm
+                ux_max_calc = bb_sh.Max.X - (175.0 * mm)
+                try:
+                    vps_carimbo = (FilteredElementCollector(doc, sh.Id)
+                                   .OfClass(Viewport)
+                                   .ToElements())
+                    if vps_carimbo:
+                        outlines = []
+                        for vp in vps_carimbo:
+                            try:
+                                ol = vp.GetBoxOutline()
+                                outlines.append(ol)
+                            except:
+                                pass
+                        if outlines:
+                            outlines.sort(key=lambda o: o.MinimumPoint.X, reverse=True)
+                            ux_max_calc = outlines[0].MinimumPoint.X - (5.0 * mm)
+                except:
+                    pass
 
                 return (
                     sh,
-                    bb_sh.Min.X + margem_esq,
-                    bb_sh.Max.X - margem_dir,
-                    bb_sh.Min.Y + margem_inf,
-                    bb_sh.Max.Y - margem_sup,
+                    bb_sh.Min.X + MARGEM_CORTE + margem_esq,
+                    ux_max_calc,
+                    bb_sh.Min.Y + MARGEM_CORTE + margem_inf,
+                    bb_sh.Max.Y - MARGEM_CORTE - margem_sup,
                 )
 
             sheet, ux_min, ux_max, uy_min, uy_max = nova_prancha()
 
             # ----------------------------------------------------------------
-            # PASSO 1 — Criar TODOS os viewports em posição provisória (0,0)
-            #           e ler dimensões REAIS via GetBoxOutline antes de montar o layout.
+            # PASSO 1 — Criar todos os viewports em posição de staging e medir
+            #           dimensões reais via GetBoxOutline + GetLabelOutline.
+            #           slot_w = box_w, slot_h = box_h + label_h
             # ----------------------------------------------------------------
-            # Posicao de staging: fora da folha, viewports separados para nao se sobrepor
-            # O Revit usa pés internamente; 10000 ft esta bem fora de qualquer folha
-            STAGING_BASE_X = -10000.0
-            STAGING_STEP   = 5.0   # 5 ft de separacao entre cada viewport no staging
-
             vp_infos = []
-            staging_x = STAGING_BASE_X
 
             for info in vistas_geradas:
                 v = doc.GetElement(info["id"])
@@ -883,158 +880,232 @@ def executar_fluxo_callout():
                     continue
 
                 if not Viewport.CanAddViewToSheet(doc, sheet.Id, v.Id):
-                    erros_callout.append("Vista '{}' nao pode ser adicionada a prancha.".format(v.Name))
+                    erros_callout.append(
+                        "Vista '{}' nao pode ser adicionada a prancha.".format(v.Name))
                     vp_infos.append(None)
                     continue
 
-                # Cria em posicao de staging unica para nao sobrepor com outros
-                staging_pos = XYZ(staging_x, -10000.0, 0)
-                vp = Viewport.Create(doc, sheet.Id, v.Id, staging_pos)
+                vp = Viewport.Create(doc, sheet.Id, v.Id, XYZ(0, 0, 0))
+                doc.Regenerate()
+
+                # ✅ Fix Detail Number: seta o número correto no bubble do callout
+                p_det = v.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                if p_det and not p_det.IsReadOnly:
+                    p_det.Set(v.Name.split()[1])
                 doc.Regenerate()
 
                 if vp_type_id != ElementId.InvalidElementId:
                     vp.ChangeTypeId(vp_type_id)
                     doc.Regenerate()
 
+                outline  = vp.GetBoxOutline()
+                box_w    = outline.MaximumPoint.X - outline.MinimumPoint.X
+                box_h    = outline.MaximumPoint.Y - outline.MinimumPoint.Y
+                label_h  = 0.0
                 try:
-                    vp.LabelOffset = XYZ(0.0, 0.0, 0.0)
+                    lbl_outline = vp.GetLabelOutline()
+                    if lbl_outline is not None:
+                        if lbl_outline.MinimumPoint.Y < outline.MinimumPoint.Y:
+                            label_h = lbl_outline.MaximumPoint.Y - lbl_outline.MinimumPoint.Y
+                except:
+                    pass
+                LABEL_H_MIN = 15*mm
+                # Mede também a largura do label para incluir no slot_w
+                label_w = 0.0
+                try:
+                    lbl_outline = vp.GetLabelOutline()
+                    if lbl_outline is not None:
+                        label_w = lbl_outline.MaximumPoint.X - lbl_outline.MinimumPoint.X
+                except:
+                    pass
+                slot_w = max(box_w, label_w)
+                vp_infos.append({
+                    "vp":      vp,
+                    "view_id": v.Id,
+                    "box_w":   box_w,
+                    "box_h":   box_h,
+                    "label_h": label_h,
+                    "label_w": label_w,
+                    "slot_w":  slot_w,
+                    "slot_h":  box_h + max(label_h, LABEL_H_MIN),
+                    "nome":    v.Name,
+                })
+
+            # Filtra Nones
+            vp_infos = [vi for vi in vp_infos if vi is not None]
+
+            if not vp_infos:
+                t.Commit()
+                tg.Assimilate()
+                forms.alert("Nenhum viewport pôde ser criado.")
+                return
+
+            # ----------------------------------------------------------------
+            # PASSO 2 — Grade ótima: calcula ncols/nrows com base no maior
+            #           viewport. Distribui igualmente entre pranchas.
+            # ----------------------------------------------------------------
+            # ----------------------------------------------------------------
+            # PASSO 2 — Bin packing: vai adicionando viewports e abre nova
+            #           prancha quando não couber mais.
+            # ----------------------------------------------------------------
+            area_w = ux_max - ux_min
+            area_h = uy_max - uy_min
+
+            grupo_atual = []
+            grupos_prancha = []
+
+            for vi in vp_infos:
+                grupo_atual.append(vi)
+
+                ref_sw_p = max(v["slot_w"] for v in grupo_atual) 
+                ref_sh_p = max(v["slot_h"] for v in grupo_atual) 
+                ncols_t = max(1, int((area_w + espacamento) / (ref_sw_p + espacamento)))
+                nrows_t = max(1, int((area_h + MARGEM_ENTRE_LINHAS) / (ref_sh_p + MARGEM_ENTRE_LINHAS)))
+
+                if len(grupo_atual) > ncols_t * nrows_t:
+                    grupos_prancha.append(grupo_atual[:-1])
+                    grupo_atual = [vi]
+
+            if grupo_atual:
+                grupos_prancha.append(grupo_atual)
+
+            # ----------------------------------------------------------------
+            # PASSO 3 — Posicionamento com espaçamento uniforme e centralizado.
+            #           LabelOffset recalculado após o move.
+            #           Ao mudar de prancha, recria viewports corretamente.
+            # ----------------------------------------------------------------
+            def _recriar_vp_na_prancha(sh_dest, vi):
+                """Deleta viewport existente e recria na nova prancha."""
+                try:
+                    doc.Delete(vi["vp"].Id)
                     doc.Regenerate()
                 except:
                     pass
 
-                outline = vp.GetBoxOutline()
-                real_w  = outline.MaximumPoint.X - outline.MinimumPoint.X
-                real_h  = outline.MaximumPoint.Y - outline.MinimumPoint.Y
+                new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
+                doc.Regenerate()
 
-                # Guarda o offset do canto inferior esquerdo do outline em relacao
-                # ao centro do viewport (posicao de criacao = staging_pos)
-                # Isso permite calcular o shift correto na hora de posicionar.
-                off_min_x = outline.MinimumPoint.X - staging_pos.X
-                off_min_y = outline.MinimumPoint.Y - staging_pos.Y
+                # ✅ Fix Detail Number: seta o número correto no bubble do callout
+                vista_elem = doc.GetElement(vi["view_id"])
+                if vista_elem:
+                    p_det = vista_elem.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                    if p_det and not p_det.IsReadOnly:
+                        p_det.Set(vi["nome"].split()[1])
+                doc.Regenerate()
 
-                vp_infos.append({
-                    "vp":        vp,
-                    "view_id":   v.Id,
-                    "real_w":    real_w,
-                    "real_h":    real_h,
-                    "off_min_x": off_min_x,
-                    "off_min_y": off_min_y,
-                    "nome":      v.Name,
-                    "staging":   staging_pos,
-                })
+                if new_vp and vp_type_id != ElementId.InvalidElementId:
+                    new_vp.ChangeTypeId(vp_type_id)
+                    doc.Regenerate()
 
-                staging_x += STAGING_STEP
-
-            # ----------------------------------------------------------------
-            # PASSO 2 — Agrupar em linhas usando largura REAL de cada viewport.
-            # ----------------------------------------------------------------
-            linhas      = []
-            linha_atual = []
-            tmp_x       = ux_min
-
-            for vp_info in vp_infos:
-                if vp_info is None:
-                    continue
-                rw = vp_info["real_w"]
-                if tmp_x + rw > ux_max and tmp_x > ux_min:
-                    linhas.append(linha_atual)
-                    linha_atual = [vp_info]
-                    tmp_x = ux_min + rw + espacamento
-                else:
-                    linha_atual.append(vp_info)
-                    tmp_x += rw + espacamento
-
-            if linha_atual:
-                linhas.append(linha_atual)
-
-            # ----------------------------------------------------------------
-            # PASSO 3 — Posicionar cada viewport usando dimensões reais.
-            #           Margem entre linhas uniforme (MARGEM_LINHA).
-            # ----------------------------------------------------------------
-            cur_y = uy_max
-
-            for linha in linhas:
-                rh_max = max(vi["real_h"] for vi in linha)
-
-                if cur_y - (rh_max + MARGEM_ENTRE_LINHAS) < uy_min:
-                    sheet, ux_min, ux_max, uy_min, uy_max = nova_prancha()
-                    cur_y = uy_max
-
-                    staging_x_new = STAGING_BASE_X
-                    for vi in linha:
-                        view_id = vi["view_id"]
-                        try:
-                            doc.Delete(vi["vp"].Id)
-                            doc.Regenerate()
-                        except:
-                            pass
-                        s_pos = XYZ(staging_x_new, -10000.0, 0)
-                        new_vp = Viewport.Create(doc, sheet.Id, view_id, s_pos)
-                        doc.Regenerate()
-                        if vp_type_id != ElementId.InvalidElementId:
-                            new_vp.ChangeTypeId(vp_type_id)
-                            doc.Regenerate()
-                        try:
-                            new_vp.LabelOffset = XYZ(0.0, 0.0, 0.0)
-                            doc.Regenerate()
-                        except:
-                            pass
-                        outline = new_vp.GetBoxOutline()
-                        rw = outline.MaximumPoint.X - outline.MinimumPoint.X
-                        rh = outline.MaximumPoint.Y - outline.MinimumPoint.Y
-                        vi["vp"]        = new_vp
-                        vi["real_w"]    = rw
-                        vi["real_h"]    = rh
-                        vi["off_min_x"] = outline.MinimumPoint.X - s_pos.X
-                        vi["off_min_y"] = outline.MinimumPoint.Y - s_pos.Y
-                        vi["staging"]   = s_pos
-                        staging_x_new += STAGING_STEP
-
-                    rh_max = max(vi["real_h"] for vi in linha)
-
-                baseline_y = cur_y - rh_max
-                cur_x      = ux_min
-
-                for vi in linha:
-                    real_w = 0.0
+                if new_vp:
+                    ol    = new_vp.GetBoxOutline()
+                    bw    = ol.MaximumPoint.X - ol.MinimumPoint.X
+                    bh    = ol.MaximumPoint.Y - ol.MinimumPoint.Y
+                    lh    = 0.0
+                    lw    = 0.0
                     try:
-                        vp      = vi["vp"]
-                        real_w  = vi["real_w"]
-                        real_h  = vi["real_h"]
-                        off_x   = vi["off_min_x"]
-                        off_y   = vi["off_min_y"]
+                        lbl_ol = new_vp.GetLabelOutline()
+                        if lbl_ol is not None and lbl_ol.MinimumPoint.Y < ol.MinimumPoint.Y:
+                            lh = lbl_ol.MaximumPoint.Y - lbl_ol.MinimumPoint.Y
+                        if lbl_ol is not None:
+                            lw = lbl_ol.MaximumPoint.X - lbl_ol.MinimumPoint.X
+                    except:
+                        pass
+                    vi["vp"]      = new_vp
+                    vi["box_w"]   = bw
+                    vi["box_h"]   = bh
+                    vi["label_h"] = lh
+                    vi["label_w"] = lw
+                    vi["slot_w"]  = max(bw, lw)
+                    vi["slot_h"]  = bh + max(lh, LABEL_H_MIN)
 
-                        # Centro atual do viewport = posicao de staging guardada
-                        cur_center = vi["staging"]
+            primeira_prancha = sheet
 
-                        # Queremos que outline.Min fique em (cur_x, baseline_y).
-                        # outline.Min = center + (off_x, off_y)
-                        # Portanto: target_center = (cur_x - off_x, baseline_y - off_y)
-                        # Delta = target_center - cur_center
-                        target_cx = cur_x - off_x
-                        target_cy = baseline_y - off_y
-                        delta = XYZ(target_cx - cur_center.X, target_cy - cur_center.Y, 0)
+            for p_idx, grupo in enumerate(grupos_prancha):
+                if p_idx == 0:
+                    sh_atual = primeira_prancha
+                    ux_min_p, ux_max_p, uy_min_p, uy_max_p = ux_min, ux_max, uy_min, uy_max
+                else:
+                    sh_atual, ux_min_p, ux_max_p, uy_min_p, uy_max_p = nova_prancha()
+                    for vi in grupo:
+                        _recriar_vp_na_prancha(sh_atual, vi)
 
-                        DB.ElementTransformUtils.MoveElement(doc, vp.Id, delta)
-                        doc.Regenerate()
+                area_w_p = ux_max_p - ux_min_p
+                area_h_p = uy_max_p - uy_min_p
 
-                        # Atualiza staging para posicao final (caso precise referenciar depois)
-                        vi["staging"] = XYZ(target_cx, target_cy, 0)
+                # Divide o grupo em linhas de ncols
+                # Recalcula ncols pro grupo desta prancha
+                ref_sw_p = sum(vi["slot_w"] for vi in grupo) / len(grupo)
+                ncols = max(1, int((area_w_p + espacamento) / (ref_sw_p + espacamento)))
 
-                        vp.LabelOffset = XYZ(0.0, 0.0, 0.0)
-                        doc.Regenerate()
+                linhas_g = [grupo[i:i + ncols] for i in range(0, len(grupo), ncols)]
+                n_lin    = len(linhas_g)
 
-                    except Exception as e:
-                        erros_callout.append("Erro ao posicionar vista '{}': {}".format(vi["nome"], str(e)))
+                alt_lins = [max(vi["slot_h"] for vi in ln) for ln in linhas_g]
+                tot_h    = sum(alt_lins)
 
-                    cur_x += real_w + espacamento
+                # gap_y uniforme, nunca menor que MARGEM_ENTRE_LINHAS
+                GAP_Y_MAX = 40.0 * mm
+                if n_lin > 1:
+                    gap_y = min(GAP_Y_MAX, max(MARGEM_ENTRE_LINHAS,
+                                (area_h_p - tot_h) / float(n_lin - 1)))
+                else:
+                    gap_y = 0.0
 
-                cur_y -= (rh_max + MARGEM_ENTRE_LINHAS)
+                # Começa do topo da área útil (sem centralização vertical)
+                cur_y_p = uy_max_p
+
+                for l_idx, linha in enumerate(linhas_g):
+                    rh_max = alt_lins[l_idx]
+                    n_col  = len(linha)
+                    tot_w  = sum(vi["slot_w"] for vi in linha)
+
+                    # gap_x uniforme, nunca menor que espacamento
+                    GAP_X_MAX = 20.0 * mm
+                    if n_col > 1:
+                        gap_x = min(GAP_X_MAX, max(espacamento,
+                                    (area_w_p - tot_w) / float(n_col - 1)))
+                    else:
+                        gap_x = 0.0
+
+                    # Centraliza horizontalmente
+                    bloco_w = tot_w + gap_x * (n_col - 1)
+                    cur_x_p = ux_min_p + (area_w_p - bloco_w) / 2.0
+                    base_y = cur_y_p - rh_max
+
+                    for vi in linha:
+                        try:
+                            vp = vi["vp"]
+                            if vp is None:
+                                continue
+                            ol = vp.GetBoxOutline()
+                            # Alinha todos pela borda inferior do box
+                            DB.ElementTransformUtils.MoveElement(
+                                doc, vp.Id,
+                                XYZ(cur_x_p - ol.MinimumPoint.X,
+                                    base_y  - ol.MinimumPoint.Y, 0))
+                            # Zera o LabelOffset — Revit posiciona o título
+                            # sempre abaixo do box, igual pra qualquer tamanho
+                            GAP = 9*mm
+                            vp.LabelOffset = XYZ(0.0, -GAP, 0.0)
+                            doc.Regenerate()
+
+                        except Exception as e:
+                            erros_callout.append(
+                                "Erro ao posicionar vista '{}': {}".format(vi["nome"], str(e)))
+
+                        cur_x_p += vi["slot_w"] + gap_x
+
+                    cur_y_p -= (rh_max + gap_y)
 
             t.Commit()
         tg.Assimilate()
 
+        tempo = time.time() - inicio
+    mins = int(tempo // 60)
+    segs = int(tempo % 60)
     msg = "Concluido! {} vistas criadas e paginadas.".format(len(vistas_geradas))
+    msg += "\n\nTempo de execução: {}m {}s".format(mins, segs)
     if erros_callout:
         msg += "\n\nAvisos ({}):\n{}".format(len(erros_callout), "\n".join(erros_callout))
     forms.alert(msg)

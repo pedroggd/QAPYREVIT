@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__title__ = "Iso\\Fix2+"
+__title__ = "AutoIso3D\n+"
 __author__ = "PyRevit Plugin"
 
 import clr
@@ -75,13 +75,39 @@ def remove_accents(s):
 def sanitize_name(name):
     return re.sub(r'[\\:\{\}\[\]|;<>?\'~]', '-', name).strip()
 
+def _proximo_contador(prefixo, identificador, num_inicial, sufixo):
+    maior_num = num_inicial - 1
+    for v in FilteredElementCollector(doc).OfClass(DB.View):
+        if v.IsTemplate: continue
+        
+        p_pref  = re.escape(prefixo)      if prefixo      else ""
+        p_ident = re.escape(identificador) if identificador else ""
+        p_suf   = re.escape(sufixo)       if sufixo       else ""
+        
+        pattern = r'^'
+        if p_pref:  pattern += p_pref  + r'\s*'
+        if p_ident: pattern += p_ident
+        pattern += r'(\d+)'
+        if p_suf:   pattern += r'\s*' + p_suf
+        pattern += r'$'
+        
+        match = re.search(pattern, v.Name, re.IGNORECASE)
+        if match:
+            try:
+                num = int(match.group(1))
+                if num > maior_num:
+                    maior_num = num
+            except:
+                pass
+    return maior_num + 1
+
 def get_unique_view_name(base_name):
     existing = {v.Name for v in FilteredElementCollector(doc).OfClass(DB.View)}
     if base_name not in existing:
         return base_name
     i = 1
     while True:
-        candidate = "{} ({})".format(base_name, i)
+        candidate = "%s (%d)" % (base_name, i)
         if candidate not in existing:
             return candidate
         i += 1
@@ -121,6 +147,19 @@ def get_viewport_types():
             continue
     return tipos
 
+def criar_placeholder_drafting_view(nome_base, drafting_vft_id):
+    nome = get_unique_view_name(nome_base + " - REF")
+    nova_drafting = DB.ViewDrafting.Create(doc, drafting_vft_id)
+    nova_drafting.Name = nome
+    try:
+        pt1 = XYZ(0, 0, 0)
+        pt2 = XYZ(0.01, 0, 0)
+        linha = DB.Line.CreateBound(pt1, pt2)
+        doc.Create.NewDetailCurve(nova_drafting, linha)
+    except:
+        pass
+    return nova_drafting
+
 class IsometricConfigWindow(Window):
     COR_AZUL   = Color.FromRgb(30, 80, 160)
     COR_VERDE  = Color.FromRgb(22, 160, 80)
@@ -156,7 +195,7 @@ class IsometricConfigWindow(Window):
             if fam_name not in titleblock_symbols:
                 return
             for tipo in sorted(titleblock_symbols[fam_name].keys()):
-                lbl = "{} : {}".format(fam_name, tipo)
+                lbl = "%s : %s" % (fam_name, tipo)
                 self._tb_labels.append(lbl)
                 self._tb_symbols[lbl] = titleblock_symbols[fam_name][tipo]
 
@@ -240,7 +279,7 @@ class IsometricConfigWindow(Window):
         self.txt_prefixo.FontSize = 12
         self.txt_prefixo.Padding  = Thickness(6, 4, 6, 4)
         self.txt_prefixo.Margin   = Thickness(0, 0, 0, 12)
-        self.txt_prefixo.Text     = "DETALHE"
+        self.txt_prefixo.Text     = "DET."
         pnl.Children.Add(self.txt_prefixo)
 
         self._lbl(pnl, "Identificador (ex: 'H', 'S', ou vazio):", 11, bold=True, mg=(0, 0, 0, 4))
@@ -261,7 +300,7 @@ class IsometricConfigWindow(Window):
         self.txt_num_inicial = TextBox()
         self.txt_num_inicial.FontSize = 12
         self.txt_num_inicial.Padding  = Thickness(6, 4, 6, 4)
-        self.txt_num_inicial.Text     = "1"
+        self.txt_num_inicial.Text     = "01"
         pnl_num.Children.Add(self.txt_num_inicial)
         Grid.SetColumn(pnl_num, 0); g_cont.Children.Add(pnl_num)
 
@@ -425,12 +464,12 @@ class IsometricConfigWindow(Window):
 
         sem_escala = bool(self.chk_sem_escala.IsChecked)
 
-        tb_idx = self.combo_titleblock.SelectedIndex
-        tb_lbl = self._tb_labels[tb_idx] if 0 <= tb_idx < len(self._tb_labels) else None
+        tb_idx    = self.combo_titleblock.SelectedIndex
+        tb_lbl    = self._tb_labels[tb_idx] if 0 <= tb_idx < len(self._tb_labels) else None
         tb_symbol = self._tb_symbols.get(tb_lbl) if tb_lbl else None
 
-        vp_idx = self.combo_vp_type.SelectedIndex
-        vp_lbl = self._vp_type_labels[vp_idx] if 0 <= vp_idx < len(self._vp_type_labels) else None
+        vp_idx         = self.combo_vp_type.SelectedIndex
+        vp_lbl         = self._vp_type_labels[vp_idx] if 0 <= vp_idx < len(self._vp_type_labels) else None
         vp_type_id_sel = self.viewport_types_dict.get(vp_lbl, ElementId.InvalidElementId) if vp_lbl else ElementId.InvalidElementId
 
         dados_carimbo = {}
@@ -455,11 +494,12 @@ class IsometricConfigWindow(Window):
         }
         self.Close()
 
+
 def executar_fluxo_isometrico():
     titleblock_symbols = get_titleblock_symbols_by_family()
     if not titleblock_symbols:
         forms.alert(
-            "Nenhum carimbo encontrado.\nCarregue a família '{}' e tente novamente.".format(FAMILIA_NOME),
+            "Nenhum carimbo encontrado.\nCarregue a família '%s' e tente novamente." % FAMILIA_NOME,
             exitscript=True
         )
 
@@ -505,30 +545,27 @@ def executar_fluxo_isometrico():
         FilteredElementCollector(doc).OfClass(Level).ToElements(),
         key=lambda n: n.Elevation
     )
-    
-    vista_ativa = doc.ActiveView
-    nivel_atual = vista_ativa.GenLevel
 
-    callout_vft_id = ElementId.InvalidElementId
+    vista_ativa  = doc.ActiveView
+    nivel_atual  = vista_ativa.GenLevel
+
+    drafting_vft_id = ElementId.InvalidElementId
     for vft in FilteredElementCollector(doc).OfClass(ViewFamilyType):
-        if vft.ViewFamily == ViewFamily.Detail:
-            callout_vft_id = vft.Id
+        if vft.ViewFamily == ViewFamily.Drafting:
+            drafting_vft_id = vft.Id
             break
 
-    grupos   = []
-    
-    contador = 1
+    grupos          = []
+    contador        = _proximo_contador(prefixo, identificador, num_inicial, sufixo)
+    contador_inicial = contador
 
     while True:
-        formato_num   = "{:0" + str(zeros) + "d}"
-        numero_str    = formato_num.format(num_inicial + contador - 1)
-        contador_full = "{}{}".format(identificador, numero_str)
+        numero_str    = str(contador).zfill(zeros)
+        contador_full = "%s%s" % (identificador, numero_str)
         partes        = [prefixo, contador_full, sufixo]
         nome_preview  = " ".join([p for p in partes if p])
 
-        instrucao = "[{}] Desenhe o retângulo definindo a área do isométrico (ESC para opções)".format(
-            nome_preview
-        )
+        instrucao = "[%s] Desenhe o retângulo definindo a área do isométrico (ESC para opções)" % nome_preview
 
         try:
             box = uidoc.Selection.PickBox(PickBoxStyle.Directional, instrucao)
@@ -538,7 +575,7 @@ def executar_fluxo_isometrico():
         except Exceptions.OperationCanceledException:
             if grupos:
                 opcao = forms.alert(
-                    "Seleção pausada. {} isométrico(s) na fila.\nO que deseja fazer?".format(len(grupos)),
+                    "Seleção pausada. %d isométrico(s) na fila.\nO que deseja fazer?" % len(grupos),
                     options=["Finalizar e Criar Pranchas", "Desfazer o ÚLTIMO e Continuar", "Cancelar Script"]
                 )
                 if opcao == "Desfazer o ÚLTIMO e Continuar":
@@ -552,7 +589,7 @@ def executar_fluxo_isometrico():
             else:
                 script.exit()
         except Exception as e:
-            forms.alert("Erro na seleção: {}".format(str(e)))
+            forms.alert("Erro na seleção: %s" % str(e))
             break
 
     if not grupos:
@@ -565,22 +602,16 @@ def executar_fluxo_isometrico():
     with TransactionGroup(doc, "Gerador de Isométricos") as tg:
         tg.Start()
 
-        formato_num = "{:0" + str(zeros) + "d}"
-
         for idx, box in enumerate(grupos):
-            numero_str    = formato_num.format(num_inicial + idx)
-            contador_full = "{}{}".format(identificador, numero_str)
-            
-            # NOME COMPLETO: Vai para o 3D e Prancha
-            partes = [prefixo, contador_full, sufixo]
-            nome_iso = sanitize_name(" ".join([p for p in partes if p]))
-            
-            # NOME CURTO: Vai para a caixa de texto 2D
-            nome_curto = "{} {}".format(prefixo, contador_full).strip()
+            numero_str    = str(contador_inicial + idx).zfill(zeros)
+            contador_full = "%s%s" % (identificador, numero_str)
+            partes        = [prefixo, contador_full, sufixo]
+            nome_iso      = sanitize_name(" ".join([p for p in partes if p]))
 
-            novo_id = None
+            novo_id        = None
+            placeholder_id = None
 
-            with Transaction(doc, "Criar Isométrico: {}".format(nome_iso)) as t:
+            with Transaction(doc, "Criar Isométrico: %s" % nome_iso) as t:
                 t.Start()
                 try:
                     p_min_x = min(box.Min.X, box.Max.X)
@@ -603,7 +634,7 @@ def executar_fluxo_isometrico():
                     section_box.Min = XYZ(p_min_x - margem, p_min_y - margem, z_min)
                     section_box.Max = XYZ(p_max_x + margem, p_max_y + margem, z_max)
 
-                    nova = View3D.CreateIsometric(doc, view_type_id)
+                    nova      = View3D.CreateIsometric(doc, view_type_id)
                     nova.Name = get_unique_view_name(nome_iso)
 
                     nova.IsSectionBoxActive = True
@@ -622,44 +653,38 @@ def executar_fluxo_isometrico():
                         except:
                             pass
 
-                    # ------------------------------------------------------------------
-                    # RASTREIO: CALLOUT + CAIXA DE TEXTO POR CIMA
-                    # ------------------------------------------------------------------
-                    if callout_vft_id != ElementId.InvalidElementId and vista_ativa.ViewType in [ViewType.FloorPlan, ViewType.EngineeringPlan, ViewType.CeilingPlan]:
+                    if (drafting_vft_id != ElementId.InvalidElementId
+                            and vista_ativa.ViewType in [
+                                ViewType.FloorPlan,
+                                ViewType.EngineeringPlan,
+                                ViewType.CeilingPlan]):
                         try:
+                            placeholder    = criar_placeholder_drafting_view(nome_iso, drafting_vft_id)
+                            placeholder_id = placeholder.Id
+
                             pt1 = XYZ(p_min_x, p_min_y, box.Min.Z)
                             pt2 = XYZ(p_max_x, p_max_y, box.Min.Z)
-                            
-                            # 1. Cria o Callout
-                            callout_view = DB.ViewSection.CreateCallout(doc, vista_ativa.Id, callout_vft_id, pt1, pt2)
-                            callout_view.Name = get_unique_view_name("REF 2D - " + nome_iso)
-                            
-                            # 2. Cria a Caixa de Texto do lado / em cima da tag
-                            text_type_id = doc.GetDefaultElementTypeId(DB.ElementTypeGroup.TextNoteType)
-                            if text_type_id != ElementId.InvalidElementId:
-                                texto_rastreio = "{}\nver HID/---".format(nome_curto)
-                                
-                                # Posiciona exato no canto superior direito do retangulo (onde a tag default costuma nascer)
-                                # com um pequeno ajuste (offset de ~3cm) para encobrir a original
-                                pos = XYZ(p_max_x + (0.1 / 0.3048), p_max_y - (0.1 / 0.3048), box.Min.Z)
-                                
-                                opts = DB.TextNoteOptions()
-                                opts.TypeId = text_type_id
-                                DB.TextNote.Create(doc, vista_ativa.Id, pos, texto_rastreio, opts)
-                                
+
+                            DB.ViewSection.CreateReferenceCallout(
+                                doc, vista_ativa.Id, placeholder.Id, pt1, pt2)
                         except Exception as e_rastreio:
-                            erros.append("Aviso: Falha ao criar o rastreio 2D (Callout/Texto) para '{}': {}".format(nome_iso, str(e_rastreio)))
+                            erros.append("Aviso: Falha ao criar referência para '%s': %s"
+                                         % (nome_iso, str(e_rastreio)))
 
                     doc.Regenerate()
                     novo_id = nova.Id
                     t.Commit()
 
                 except Exception as e:
-                    erros.append("Erro ao criar '{}': {}".format(nome_iso, str(e)))
+                    erros.append("Erro ao criar '%s': %s" % (nome_iso, str(e)))
                     t.RollBack()
 
             if novo_id is not None:
-                vistas_geradas.append({"id": novo_id})
+                vistas_geradas.append({
+                    "id":              novo_id,
+                    "placeholder_id":  placeholder_id,
+                    "numero_detalhe":  contador_inicial + idx,
+                })
 
         if not vistas_geradas:
             tg.RollBack()
@@ -670,12 +695,15 @@ def executar_fluxo_isometrico():
             t.Start()
             doc.Regenerate()
 
-            mm              = 1.0 / 304.8
-            margem_esq      = 25.0  * mm
-            margem_sup      = 10.0  * mm
-            margem_inf      = 15.0  * mm
-            espacamento     = 15.0  * mm
-            MARGEM_ENTRE_LINHAS = 20.0 * mm
+            mm                  = 1.0 / 304.8
+            margem_esq          = 25.0 * mm
+            margem_sup          = 10.0 * mm
+            margem_inf          = 15.0 * mm
+            MARGEM_CORTE        = 5.0  * mm   # Borda de corte da folha (padrão ABNT)
+            espacamento         = 15.0 * mm   # Gap mínimo horizontal entre viewports
+            MARGEM_ENTRE_LINHAS = 20.0 * mm   # Gap mínimo vertical entre linhas
+            LABEL_H_MIN         = 15.0 * mm   # Altura mínima reservada para o título
+            GAP_LABEL           = 5.0  * mm   # Gap entre box e título
 
             def nova_prancha():
                 sh = ViewSheet.Create(doc, tb_type_id)
@@ -711,6 +739,7 @@ def executar_fluxo_isometrico():
 
                 doc.Regenerate()
 
+                # Tenta detectar ux_max a partir do viewport mais à esquerda da prancha
                 ux_max_calc = bb_sh.Max.X - (175.0 * mm)
                 try:
                     vps_carimbo = (FilteredElementCollector(doc, sh.Id)
@@ -730,144 +759,271 @@ def executar_fluxo_isometrico():
                 except:
                     pass
 
+                # MARGEM_CORTE: desconta a borda de corte da folha (padrão ABNT ~5mm)
+                # antes de aplicar a margem interna, evitando começar na borda bruta da folha.
                 return (
                     sh,
-                    bb_sh.Min.X + margem_esq,
+                    bb_sh.Min.X + MARGEM_CORTE + margem_esq,
                     ux_max_calc,
-                    bb_sh.Min.Y + margem_inf,
-                    bb_sh.Max.Y - margem_sup,
+                    bb_sh.Min.Y + MARGEM_CORTE + margem_inf,
+                    bb_sh.Max.Y - MARGEM_CORTE - margem_sup,
                 )
 
             sheet, ux_min, ux_max, uy_min, uy_max = nova_prancha()
             vp_infos = []
 
             for info in vistas_geradas:
-                v = doc.GetElement(info["id"])
-                if v is None:
+                v_3d = doc.GetElement(info["id"])
+                if v_3d is None:
                     vp_infos.append(None)
                     continue
 
-                if not Viewport.CanAddViewToSheet(doc, sheet.Id, v.Id):
-                    erros.append("Vista '{}' nao pode ser adicionada a prancha.".format(v.Name))
+                if not Viewport.CanAddViewToSheet(doc, sheet.Id, v_3d.Id):
+                    erros.append("Vista '%s' nao pode ser adicionada a prancha." % v_3d.Name)
                     vp_infos.append(None)
                     continue
 
-                vp = Viewport.Create(doc, sheet.Id, v.Id, XYZ(0, 0, 0))
-                doc.Regenerate()
+                placeholder_id = info.get("placeholder_id")
+                vp_3d          = None
+                vp_fantasma_id = None
 
-                if vp_type_id != ElementId.InvalidElementId:
-                    vp.ChangeTypeId(vp_type_id)
+                if placeholder_id and Viewport.CanAddViewToSheet(doc, sheet.Id, placeholder_id):
+                    vp_fantasma = Viewport.Create(doc, sheet.Id, placeholder_id, XYZ(10, 10, 0))
                     doc.Regenerate()
 
-                outline = vp.GetBoxOutline()
-                real_w  = outline.MaximumPoint.X - outline.MinimumPoint.X
-                real_h  = outline.MaximumPoint.Y - outline.MinimumPoint.Y
+                    if vp_fantasma:
+                        vp_fantasma_id = vp_fantasma.Id
+                        vista_fantasma = doc.GetElement(placeholder_id)
+                        if vista_fantasma:
+                            p_det_f = vista_fantasma.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                            if p_det_f and not p_det_f.IsReadOnly:
+                                p_det_f.Set(vista_fantasma.Name.split()[1])
 
-                label_h = 0.0
+                        vp_3d = Viewport.Create(doc, sheet.Id, v_3d.Id, XYZ(0, 0, 0))
+                        doc.Regenerate()
+                        if vp_3d:
+                            p_3d = v_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                            if p_3d and not p_3d.IsReadOnly:
+                                p_3d.Set(v_3d.Name.split()[1] + u"\u200b")
+                else:
+                    vp_3d = Viewport.Create(doc, sheet.Id, v_3d.Id, XYZ(0, 0, 0))
+                    doc.Regenerate()
+                    p_3d = v_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                    if p_3d and not p_3d.IsReadOnly:
+                        p_3d.Set(v_3d.Name.split()[1])
+
+                if vp_3d and vp_type_id != ElementId.InvalidElementId:
+                    vp_3d.ChangeTypeId(vp_type_id)
+                    doc.Regenerate()
+
+                if vp_3d:
+                    outline = vp_3d.GetBoxOutline()
+                    box_w   = outline.MaximumPoint.X - outline.MinimumPoint.X
+                    box_h   = outline.MaximumPoint.Y - outline.MinimumPoint.Y
+                    label_h = 0.0
+                    label_w = 0.0
+                    try:
+                        lbl_outline = vp_3d.GetLabelOutline()
+                        if lbl_outline is not None:
+                            if lbl_outline.MinimumPoint.Y < outline.MinimumPoint.Y:
+                                label_h = lbl_outline.MaximumPoint.Y - lbl_outline.MinimumPoint.Y
+                            # Título pode ser mais largo que o box: slot_w precisa considerar isso
+                            label_w = lbl_outline.MaximumPoint.X - lbl_outline.MinimumPoint.X
+                    except:
+                        pass
+
+                    vp_infos.append({
+                        "vp":             vp_3d,
+                        "view_id":        v_3d.Id,
+                        "box_w":          box_w,
+                        "box_h":          box_h,
+                        "label_h":        label_h,
+                        "label_w":        label_w,
+                        "slot_w":         max(box_w, label_w),        # ← corrigido
+                        "slot_h":         box_h + max(label_h, LABEL_H_MIN),  # ← corrigido
+                        "nome":           v_3d.Name,
+                        "placeholder_id": placeholder_id,
+                        "vp_fantasma_id": vp_fantasma_id,
+                        "numero_detalhe": info["numero_detalhe"],
+                    })
+                else:
+                    vp_infos.append(None)
+
+            vp_infos = [vi for vi in vp_infos if vi is not None]
+
+            if not vp_infos:
+                t.Commit()
+                tg.Assimilate()
+                forms.alert("Nenhum viewport pôde ser criado.")
+                return
+
+            import math as _math
+
+            area_w = ux_max - ux_min
+            area_h = uy_max - uy_min
+            ref_sw = max(vi["slot_w"] for vi in vp_infos)
+            ref_sh = max(vi["slot_h"] for vi in vp_infos)
+
+            ncols = max(1, int((area_w + espacamento) / (ref_sw + espacamento)))
+            nrows = max(1, int((area_h + MARGEM_ENTRE_LINHAS) / (ref_sh + MARGEM_ENTRE_LINHAS)))
+            cap   = ncols * nrows
+            total = len(vp_infos)
+
+            n_pranchas = max(1, int(_math.ceil(total / float(cap))))
+
+            grupos_prancha = []
+            restante = list(vp_infos)
+            for _p in range(n_pranchas):
+                qtd = int(_math.ceil(len(restante) / float(n_pranchas - _p)))
+                grupos_prancha.append(restante[:qtd])
+                restante = restante[qtd:]
+
+            def _recriar_vp_na_prancha(sh_dest, vi):
+                if vi.get("vp_fantasma_id"):
+                    try:
+                        doc.Delete(vi["vp_fantasma_id"])
+                        doc.Regenerate()
+                    except:
+                        pass
                 try:
-                    lbl_outline = vp.GetLabelOutline()
-                    if lbl_outline is not None:
-                        if lbl_outline.MinimumPoint.Y < outline.MinimumPoint.Y:
-                            label_h = lbl_outline.MaximumPoint.Y - lbl_outline.MinimumPoint.Y
+                    doc.Delete(vi["vp"].Id)
+                    doc.Regenerate()
                 except:
                     pass
 
-                vp_infos.append({
-                    "vp":      vp,
-                    "view_id": v.Id,
-                    "real_w":  real_w,
-                    "real_h":  real_h + label_h,
-                    "nome":    v.Name,
-                })
+                ph_id           = vi.get("placeholder_id")
+                new_vp          = None
+                new_fantasma_id = None
 
-            linhas      = []
-            linha_atual = []
-            tmp_x       = ux_min
+                if ph_id and Viewport.CanAddViewToSheet(doc, sh_dest.Id, ph_id):
+                    vp_f = Viewport.Create(doc, sh_dest.Id, ph_id, XYZ(10, 10, 0))
+                    doc.Regenerate()
+                    if vp_f:
+                        new_fantasma_id = vp_f.Id
+                        vista_fantasma  = doc.GetElement(ph_id)
+                        if vista_fantasma:
+                            p_det_f = vista_fantasma.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                            if p_det_f and not p_det_f.IsReadOnly:
+                                p_det_f.Set(vista_fantasma.Name.split()[1])
 
-            for vp_info in vp_infos:
-                if vp_info is None:
-                    continue
-                rw = vp_info["real_w"]
-                if tmp_x + rw > ux_max and tmp_x > ux_min:
-                    linhas.append(linha_atual)
-                    linha_atual = [vp_info]
-                    tmp_x = ux_min + rw + espacamento
+                        new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
+                        doc.Regenerate()
+                        if new_vp:
+                            vista_3d = doc.GetElement(vi["view_id"])
+                            if vista_3d:
+                                p_3d = vista_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                                if p_3d and not p_3d.IsReadOnly:
+                                    p_3d.Set(vista_3d.Name.split()[1] + u"\u200b")
                 else:
-                    linha_atual.append(vp_info)
-                    tmp_x += rw + espacamento
+                    new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
+                    doc.Regenerate()
+                    vista_3d = doc.GetElement(vi["view_id"])
+                    if vista_3d:
+                        p_3d = vista_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                        if p_3d and not p_3d.IsReadOnly:
+                            p_3d.Set(vista_3d.Name.split()[1])
 
-            if linha_atual:
-                linhas.append(linha_atual)
+                if new_vp and vp_type_id != ElementId.InvalidElementId:
+                    new_vp.ChangeTypeId(vp_type_id)
+                    doc.Regenerate()
 
-            cur_y = uy_max
+                if new_vp:
+                    ol = new_vp.GetBoxOutline()
+                    bw = ol.MaximumPoint.X - ol.MinimumPoint.X
+                    bh = ol.MaximumPoint.Y - ol.MinimumPoint.Y
+                    lh = 0.0
+                    lw = 0.0
+                    try:
+                        lbl_ol = new_vp.GetLabelOutline()
+                        if lbl_ol is not None:
+                            if lbl_ol.MinimumPoint.Y < ol.MinimumPoint.Y:
+                                lh = lbl_ol.MaximumPoint.Y - lbl_ol.MinimumPoint.Y
+                            lw = lbl_ol.MaximumPoint.X - lbl_ol.MinimumPoint.X
+                    except:
+                        pass
+                    vi["vp"]             = new_vp
+                    vi["box_w"]          = bw
+                    vi["box_h"]          = bh
+                    vi["label_h"]        = lh
+                    vi["label_w"]        = lw
+                    vi["slot_w"]         = max(bw, lw)               # ← corrigido
+                    vi["slot_h"]         = bh + max(lh, LABEL_H_MIN) # ← corrigido
+                    vi["vp_fantasma_id"] = new_fantasma_id
 
-            for linha in linhas:
-                rh_max = max(vi["real_h"] for vi in linha)
+            primeira_prancha = sheet
 
-                if cur_y - (rh_max + MARGEM_ENTRE_LINHAS) < uy_min:
-                    sheet, ux_min, ux_max, uy_min, uy_max = nova_prancha()
-                    cur_y = uy_max
+            for p_idx, grupo in enumerate(grupos_prancha):
+                if p_idx == 0:
+                    sh_atual = primeira_prancha
+                    ux_min_p, ux_max_p, uy_min_p, uy_max_p = ux_min, ux_max, uy_min, uy_max
+                else:
+                    sh_atual, ux_min_p, ux_max_p, uy_min_p, uy_max_p = nova_prancha()
+                    for vi in grupo:
+                        _recriar_vp_na_prancha(sh_atual, vi)
+
+                area_w_p = ux_max_p - ux_min_p
+                area_h_p = uy_max_p - uy_min_p
+
+                linhas_g = [grupo[i:i + ncols] for i in range(0, len(grupo), ncols)]
+                n_lin    = len(linhas_g)
+
+                alt_lins = [max(vi["slot_h"] for vi in ln) for ln in linhas_g]
+                tot_h    = sum(alt_lins)
+
+                GAP_Y_MAX = 40.0 * mm
+                if n_lin > 1:
+                    gap_y = min(GAP_Y_MAX, max(MARGEM_ENTRE_LINHAS,
+                                (area_h_p - tot_h) / float(n_lin - 1)))
+                else:
+                    gap_y = 0.0
+
+                cur_y_p = uy_max_p
+
+                for l_idx, linha in enumerate(linhas_g):
+                    rh_max = alt_lins[l_idx]
+                    n_col  = len(linha)
+                    tot_w  = sum(vi["slot_w"] for vi in linha)
+
+                    GAP_X_MAX = 20.0 * mm
+                    if n_col > 1:
+                        gap_x = min(GAP_X_MAX, max(espacamento,
+                                    (area_w_p - tot_w) / float(n_col - 1)))
+                    else:
+                        gap_x = 0.0
+
+                    bloco_w = tot_w + gap_x * (n_col - 1)
+                    cur_x_p = ux_min_p + (area_w_p - bloco_w) / 2.0
+                    base_y  = cur_y_p - rh_max
 
                     for vi in linha:
-                        view_id = vi["view_id"]
                         try:
-                            doc.Delete(vi["vp"].Id)
+                            vp = vi["vp"]
+                            if vp is None:
+                                continue
+                            ol = vp.GetBoxOutline()
+                            DB.ElementTransformUtils.MoveElement(
+                                doc, vp.Id,
+                                XYZ(cur_x_p - ol.MinimumPoint.X,
+                                    base_y  - ol.MinimumPoint.Y, 0))
+                            # Título sempre logo abaixo do box, com gap fixo —
+                            # igual ao script de detalhes 2D (LabelOffset relativo ao centro do box)
+                            vp.LabelOffset = XYZ(0.0, -GAP_LABEL, 0.0)
                             doc.Regenerate()
-                        except:
-                            pass
-                        new_vp = Viewport.Create(doc, sheet.Id, view_id, XYZ(0, 0, 0))
-                        doc.Regenerate()
-                        if vp_type_id != ElementId.InvalidElementId:
-                            new_vp.ChangeTypeId(vp_type_id)
-                            doc.Regenerate()
-                        outline = new_vp.GetBoxOutline()
-                        label_h = 0.0
-                        try:
-                            lbl_ol = new_vp.GetLabelOutline()
-                            if lbl_ol is not None and lbl_ol.MinimumPoint.Y < outline.MinimumPoint.Y:
-                                label_h = lbl_ol.MaximumPoint.Y - lbl_ol.MinimumPoint.Y
-                        except:
-                            pass
-                        vi["vp"]     = new_vp
-                        vi["real_w"] = outline.MaximumPoint.X - outline.MinimumPoint.X
-                        vi["real_h"] = (outline.MaximumPoint.Y - outline.MinimumPoint.Y) + label_h
+                        except Exception as e:
+                            erros.append("Erro ao posicionar '%s': %s" % (vi["nome"], str(e)))
+                        cur_x_p += vi["slot_w"] + gap_x
 
-                    rh_max = max(vi["real_h"] for vi in linha)
-
-                baseline_y = cur_y - rh_max
-                cur_x      = ux_min
-
-                for vi in linha:
-                    real_w = 0.0
-                    try:
-                        vp     = vi["vp"]
-                        real_w = vi["real_w"]
-                        real_h = vi["real_h"]
-
-                        outline = vp.GetBoxOutline()
-                        shift_x = cur_x - outline.MinimumPoint.X
-                        shift_y = baseline_y - outline.MinimumPoint.Y
-
-                        DB.ElementTransformUtils.MoveElement(doc, vp.Id, XYZ(shift_x, shift_y, 0))
-                        doc.Regenerate()
-
-                        vp.LabelOffset = XYZ(0.0, -(real_h / 2.0) + (15.0 * mm), 0)
-                        doc.Regenerate()
-
-                    except Exception as e:
-                        erros.append("Erro ao posicionar vista '{}': {}".format(vi["nome"], str(e)))
-
-                    cur_x += real_w + espacamento
-
-                cur_y -= (rh_max + MARGEM_ENTRE_LINHAS)
+                    cur_y_p -= (rh_max + gap_y)
 
             t.Commit()
+
         tg.Assimilate()
 
-    msg = "Concluído! {} isométrico(s) criado(s) e paginado(s).".format(len(vistas_geradas))
+    msg = "Concluído! %d isométrico(s) criado(s) e paginado(s)." % len(vistas_geradas)
     if erros:
-        msg += "\n\nAvisos ({}):\n{}".format(len(erros), "\n".join(erros))
+        msg += "\n\nAvisos (%d):\n%s" % (len(erros), "\n".join(erros))
     forms.alert(msg)
+
 
 if __name__ == '__main__':
     executar_fluxo_isometrico()
