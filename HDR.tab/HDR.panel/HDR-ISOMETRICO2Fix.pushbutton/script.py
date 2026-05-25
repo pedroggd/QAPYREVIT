@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__title__ = "Iso\Fix2+"
+__title__ = "Iso3D\nFix2+"
 __author__ = "PyRevit Plugin"
 
 import clr
@@ -52,10 +52,6 @@ PARAMS_CARIMBO = [
     ("EMISSAO_INICIAL", "Sheet Issue Date"),
 ]
 
-# ---------------------------------------------------------------------------
-# Utilitários
-# ---------------------------------------------------------------------------
-
 def remove_accents(s):
     if not s: return ""
     mapping = {
@@ -85,17 +81,12 @@ def get_unique_view_name(base_name):
         return base_name
     i = 1
     while True:
-        candidate = "{} ({})".format(base_name, i)
+        candidate = "%s (%d)" % (base_name, i)
         if candidate not in existing:
             return candidate
         i += 1
 
-# ---------------------------------------------------------------------------
-# Carimbos — mesma lógica do Detalhes+: retorna dict família -> {tipo -> symbol}
-# ---------------------------------------------------------------------------
-
 def get_titleblock_symbols_by_family():
-    """Retorna dict: familia_nome -> {tipo_label -> FamilySymbol}."""
     by_family = {}
     for s in (FilteredElementCollector(doc)
               .OfCategory(BuiltInCategory.OST_TitleBlocks)
@@ -118,7 +109,6 @@ def get_3d_view_family_types():
     return tipos
 
 def get_viewport_types():
-    """Retorna dict ordenado: label -> ElementId, de todos os tipos de Viewport no projeto."""
     tipos = {}
     for vpt in FilteredElementCollector(doc).OfClass(DB.ElementType):
         try:
@@ -131,11 +121,20 @@ def get_viewport_types():
             continue
     return tipos
 
-
-
-# ---------------------------------------------------------------------------
-# Janela de configuração
-# ---------------------------------------------------------------------------
+def criar_placeholder_drafting_view(nome_base, drafting_vft_id):
+    nome = get_unique_view_name(nome_base + " - REF")
+    nova_drafting = DB.ViewDrafting.Create(doc, drafting_vft_id)
+    nova_drafting.Name = nome
+    
+    try:
+        pt1 = XYZ(0, 0, 0)
+        pt2 = XYZ(0.01, 0, 0)
+        linha = DB.Line.CreateBound(pt1, pt2)
+        doc.Create.NewDetailCurve(nova_drafting, linha)
+    except:
+        pass
+        
+    return nova_drafting
 
 class IsometricConfigWindow(Window):
     COR_AZUL   = Color.FromRgb(30, 80, 160)
@@ -154,7 +153,6 @@ class IsometricConfigWindow(Window):
         self._view_type_names = sorted(view_types_dict.keys())
         self.campos_carimbo   = {}
 
-        # Tipo de viewport preferido (mesma lógica do Detalhes+)
         NOME_VP_PREF = remove_accents("01. Titulo do Desenho-Com Escala (NBR-6492) 2").upper()
         self._vp_type_labels = sorted(viewport_types_dict.keys())
         self._vp_type_best   = 0
@@ -166,7 +164,6 @@ class IsometricConfigWindow(Window):
                 self._vp_type_best = i
                 break
 
-        # Lista plana de tipos de folha — família preferida primeiro (igual ao Detalhes+)
         self._tb_labels  = []
         self._tb_symbols = {}
 
@@ -174,7 +171,7 @@ class IsometricConfigWindow(Window):
             if fam_name not in titleblock_symbols:
                 return
             for tipo in sorted(titleblock_symbols[fam_name].keys()):
-                lbl = "{} : {}".format(fam_name, tipo)
+                lbl = "%s : %s" % (fam_name, tipo)
                 self._tb_labels.append(lbl)
                 self._tb_symbols[lbl] = titleblock_symbols[fam_name][tipo]
 
@@ -225,10 +222,6 @@ class IsometricConfigWindow(Window):
 
         self.Content = root
 
-    # ------------------------------------------------------------------
-    # Helpers de layout
-    # ------------------------------------------------------------------
-
     def _row(self, height):
         r = RowDefinition(); r.Height = height; return r
 
@@ -249,26 +242,20 @@ class IsometricConfigWindow(Window):
             parent.Children.Add(lbl)
         return lbl
 
-    # ------------------------------------------------------------------
-    # Aba Configurações (vistas 3D)
-    # ------------------------------------------------------------------
-
     def _build_tab_config(self):
         tab = TabItem()
         tab.Header = "Configurações"
-
         scroll = ScrollViewer()
         scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto
-
         pnl = StackPanel()
         pnl.Margin = Thickness(12)
 
-        self._lbl(pnl, "Prefixo (ex: 'ISOMÉTRICO', 'ISO'):", 11, bold=True, mg=(0, 0, 0, 4))
+        self._lbl(pnl, "Nome / Prefixo (ex: 'DETALHE', 'ISO'):", 11, bold=True, mg=(0, 0, 0, 4))
         self.txt_prefixo = TextBox()
         self.txt_prefixo.FontSize = 12
         self.txt_prefixo.Padding  = Thickness(6, 4, 6, 4)
         self.txt_prefixo.Margin   = Thickness(0, 0, 0, 12)
-        self.txt_prefixo.Text     = "ISOMÉTRICO"
+        self.txt_prefixo.Text     = "DETALHE"
         pnl.Children.Add(self.txt_prefixo)
 
         self._lbl(pnl, "Identificador (ex: 'H', 'S', ou vazio):", 11, bold=True, mg=(0, 0, 0, 4))
@@ -310,7 +297,7 @@ class IsometricConfigWindow(Window):
         self.txt_sufixo.FontSize = 12
         self.txt_sufixo.Padding  = Thickness(6, 4, 6, 4)
         self.txt_sufixo.Margin   = Thickness(0, 0, 0, 16)
-        self.txt_sufixo.Text     = "- 1°TIPO"
+        self.txt_sufixo.Text     = ""
         pnl.Children.Add(self.txt_sufixo)
 
         pnl.Children.Add(self._sep(10))
@@ -356,21 +343,14 @@ class IsometricConfigWindow(Window):
         tab.Content    = scroll
         self.tabs.Items.Add(tab)
 
-    # ------------------------------------------------------------------
-    # Aba Prancha (nova — portada do Detalhes+)
-    # ------------------------------------------------------------------
-
     def _build_tab_prancha(self):
         tab = TabItem()
         tab.Header = "Prancha"
-
         scroll = ScrollViewer()
         scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto
-
         pnl = StackPanel()
         pnl.Margin = Thickness(12)
 
-        # Tipo de folha (carimbo)
         self._lbl(pnl, "Tipo de Folha (Carimbo):", 11, bold=True, mg=(0, 0, 0, 4))
         self.combo_titleblock = ComboBox()
         self.combo_titleblock.FontSize = 11
@@ -383,7 +363,6 @@ class IsometricConfigWindow(Window):
 
         pnl.Children.Add(self._sep(8))
 
-        # Tipo de viewport
         self._lbl(pnl, "Tipo de Viewport:", 11, bold=True, mg=(0, 0, 0, 4))
         self.combo_vp_type = ComboBox()
         self.combo_vp_type.FontSize = 11
@@ -398,17 +377,11 @@ class IsometricConfigWindow(Window):
         tab.Content    = scroll
         self.tabs.Items.Add(tab)
 
-    # ------------------------------------------------------------------
-    # Aba Carimbo (parâmetros de texto)
-    # ------------------------------------------------------------------
-
     def _build_tab_carimbo(self):
         tab = TabItem()
         tab.Header = "Carimbo"
-
         scroll = ScrollViewer()
         scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto
-
         outer = StackPanel()
         outer.Margin = Thickness(12)
 
@@ -438,10 +411,6 @@ class IsometricConfigWindow(Window):
         tab.Content    = scroll
         self.tabs.Items.Add(tab)
 
-    # ------------------------------------------------------------------
-    # OK
-    # ------------------------------------------------------------------
-
     def on_ok(self, sender, args):
         prefixo       = self.txt_prefixo.Text.strip()
         identificador = self.txt_identificador.Text.strip()
@@ -461,8 +430,8 @@ class IsometricConfigWindow(Window):
 
         vt_idx       = self.combo_view_type.SelectedIndex
         view_type_id = (self.view_types_dict[self._view_type_names[vt_idx]].Id
-                        if 0 <= vt_idx < len(self._view_type_names)
-                        else ElementId.InvalidElementId)
+                         if 0 <= vt_idx < len(self._view_type_names)
+                         else ElementId.InvalidElementId)
 
         try:
             escala = int(self.txt_escala.Text.strip())
@@ -471,12 +440,10 @@ class IsometricConfigWindow(Window):
 
         sem_escala = bool(self.chk_sem_escala.IsChecked)
 
-        # Tipo de folha selecionado
         tb_idx = self.combo_titleblock.SelectedIndex
         tb_lbl = self._tb_labels[tb_idx] if 0 <= tb_idx < len(self._tb_labels) else None
         tb_symbol = self._tb_symbols.get(tb_lbl) if tb_lbl else None
 
-        # Tipo de viewport selecionado
         vp_idx = self.combo_vp_type.SelectedIndex
         vp_lbl = self._vp_type_labels[vp_idx] if 0 <= vp_idx < len(self._vp_type_labels) else None
         vp_type_id_sel = self.viewport_types_dict.get(vp_lbl, ElementId.InvalidElementId) if vp_lbl else ElementId.InvalidElementId
@@ -503,20 +470,14 @@ class IsometricConfigWindow(Window):
         }
         self.Close()
 
-# ---------------------------------------------------------------------------
-# Fluxo principal
-# ---------------------------------------------------------------------------
-
 def executar_fluxo_isometrico():
-    # Carimbos disponíveis (dict família -> {tipo -> symbol})
     titleblock_symbols = get_titleblock_symbols_by_family()
     if not titleblock_symbols:
         forms.alert(
-            "Nenhum carimbo encontrado.\nCarregue a família '{}' e tente novamente.".format(FAMILIA_NOME),
+            "Nenhum carimbo encontrado.\nCarregue a família '%s' e tente novamente." % FAMILIA_NOME,
             exitscript=True
         )
 
-    # Templates de vista 3D
     templates = {"(Nenhum)": ElementId.InvalidElementId}
     for v in FilteredElementCollector(doc).OfClass(DB.View):
         if v.IsTemplate and v.ViewType == ViewType.ThreeD:
@@ -526,12 +487,10 @@ def executar_fluxo_isometrico():
             if v.IsTemplate:
                 templates[v.Name] = v.Id
 
-    # Tipos de vista 3D
     view_types_3d = get_3d_view_family_types()
     if not view_types_3d:
         forms.alert("Nenhum tipo de vista 3D encontrado no projeto.", exitscript=True)
 
-    # Tipos de viewport
     viewport_types_dict = get_viewport_types()
 
     dlg = IsometricConfigWindow(templates, view_types_3d, titleblock_symbols, viewport_types_dict)
@@ -561,24 +520,26 @@ def executar_fluxo_isometrico():
         FilteredElementCollector(doc).OfClass(Level).ToElements(),
         key=lambda n: n.Elevation
     )
-    nivel_atual = doc.ActiveView.GenLevel
+    
+    vista_ativa = doc.ActiveView
+    nivel_atual = vista_ativa.GenLevel
 
-    # ------------------------------------------------------------------
-    # Seleção interativa das áreas
-    # ------------------------------------------------------------------
+    drafting_vft_id = ElementId.InvalidElementId
+    for vft in FilteredElementCollector(doc).OfClass(ViewFamilyType):
+        if vft.ViewFamily == ViewFamily.Drafting:
+            drafting_vft_id = vft.Id
+            break
+
     grupos   = []
     contador = 1
 
     while True:
-        formato_num   = "{:0" + str(zeros) + "d}"
-        numero_str    = formato_num.format(num_inicial + contador - 1)
-        contador_full = "{}{}".format(identificador, numero_str)
+        numero_str    = str(num_inicial + contador - 1).zfill(zeros)
+        contador_full = "%s%s" % (identificador, numero_str)
         partes        = [prefixo, contador_full, sufixo]
         nome_preview  = " ".join([p for p in partes if p])
 
-        instrucao = "[{}] Desenhe o retângulo definindo a área do isométrico (ESC para opções)".format(
-            nome_preview
-        )
+        instrucao = "[%s] Desenhe o retângulo definindo a área do isométrico (ESC para opções)" % nome_preview
 
         try:
             box = uidoc.Selection.PickBox(PickBoxStyle.Directional, instrucao)
@@ -588,7 +549,7 @@ def executar_fluxo_isometrico():
         except Exceptions.OperationCanceledException:
             if grupos:
                 opcao = forms.alert(
-                    "Seleção pausada. {} isométrico(s) na fila.\nO que deseja fazer?".format(len(grupos)),
+                    "Seleção pausada. %d isométrico(s) na fila.\nO que deseja fazer?" % len(grupos),
                     options=["Finalizar e Criar Pranchas", "Desfazer o ÚLTIMO e Continuar", "Cancelar Script"]
                 )
                 if opcao == "Desfazer o ÚLTIMO e Continuar":
@@ -602,7 +563,7 @@ def executar_fluxo_isometrico():
             else:
                 script.exit()
         except Exception as e:
-            forms.alert("Erro na seleção: {}".format(str(e)))
+            forms.alert("Erro na seleção: %s" % str(e))
             break
 
     if not grupos:
@@ -615,20 +576,17 @@ def executar_fluxo_isometrico():
     with TransactionGroup(doc, "Gerador de Isométricos") as tg:
         tg.Start()
 
-        formato_num = "{:0" + str(zeros) + "d}"
-
-        # ------------------------------------------------------------------
-        # Criação das vistas 3D isométricas
-        # ------------------------------------------------------------------
         for idx, box in enumerate(grupos):
-            numero_str    = formato_num.format(num_inicial + idx)
-            contador_full = "{}{}".format(identificador, numero_str)
-            partes        = [prefixo, contador_full, sufixo]
-            nome_iso      = sanitize_name(" ".join([p for p in partes if p]))
-
+            numero_str    = str(num_inicial + idx).zfill(zeros)
+            contador_full = "%s%s" % (identificador, numero_str)
+            
+            partes = [prefixo, contador_full, sufixo]
+            nome_iso = sanitize_name(" ".join([p for p in partes if p]))
+            
             novo_id = None
+            placeholder_id = None
 
-            with Transaction(doc, "Criar Isométrico: {}".format(nome_iso)) as t:
+            with Transaction(doc, "Criar Isométrico: %s" % nome_iso) as t:
                 t.Start()
                 try:
                     p_min_x = min(box.Min.X, box.Max.X)
@@ -670,41 +628,55 @@ def executar_fluxo_isometrico():
                         except:
                             pass
 
+                    if drafting_vft_id != ElementId.InvalidElementId and vista_ativa.ViewType in [ViewType.FloorPlan, ViewType.EngineeringPlan, ViewType.CeilingPlan]:
+                        try:
+                            placeholder = criar_placeholder_drafting_view(nome_iso, drafting_vft_id)
+                            placeholder_id = placeholder.Id
+
+                            pt1 = XYZ(p_min_x, p_min_y, box.Min.Z)
+                            pt2 = XYZ(p_max_x, p_max_y, box.Min.Z)
+
+                            DB.ViewSection.CreateReferenceCallout(
+                                doc,
+                                vista_ativa.Id,
+                                placeholder.Id,
+                                pt1,
+                                pt2
+                            )
+                        except Exception as e_rastreio:
+                            erros.append("Aviso: Falha ao criar referência para '%s': %s" % (nome_iso, str(e_rastreio)))
+
                     doc.Regenerate()
                     novo_id = nova.Id
                     t.Commit()
 
                 except Exception as e:
-                    erros.append("Erro ao criar '{}': {}".format(nome_iso, str(e)))
+                    erros.append("Erro ao criar '%s': %s" % (nome_iso, str(e)))
                     t.RollBack()
 
             if novo_id is not None:
-                vistas_geradas.append({"id": novo_id})
+                vistas_geradas.append({
+                    "id": novo_id,
+                    "placeholder_id": placeholder_id,
+                    "numero_detalhe": num_inicial + idx
+                })
 
         if not vistas_geradas:
             tg.RollBack()
             forms.alert("Nenhuma vista criada.\n" + "\n".join(erros))
             script.exit()
 
-        # ------------------------------------------------------------------
-        # Paginação
-        # ------------------------------------------------------------------
         with Transaction(doc, "Paginação de Pranchas — Isométricos") as t:
             t.Start()
             doc.Regenerate()
 
-            mm              = 1.0 / 304.8
-            margem_esq      = 25.0  * mm
-            margem_sup      = 10.0  * mm
-            margem_inf      = 15.0  * mm
-            espacamento     = 15.0  * mm
+            mm                  = 1.0 / 304.8
+            margem_esq          = 25.0 * mm
+            margem_sup          = 10.0 * mm
+            margem_inf          = 15.0 * mm
+            espacamento         = 15.0 * mm
             MARGEM_ENTRE_LINHAS = 20.0 * mm
 
-            # ------------------------------------------------------------------
-            # _calcular_margem_dir + nova_prancha — lógica idêntica ao Detalhes+
-            # Usa os viewports já presentes na prancha (do carimbo) para inferir
-            # onde o carimbo começa, sem depender de família ou formato específico.
-            # ------------------------------------------------------------------
             def nova_prancha():
                 sh = ViewSheet.Create(doc, tb_type_id)
                 doc.Regenerate()
@@ -717,7 +689,6 @@ def executar_fluxo_isometrico():
                 if not tb_instance:
                     raise Exception("Prancha sem carimbo.")
 
-                # Aplica dados do carimbo
                 for param_name, valor in dados_carimbo.items():
                     p = sh.LookupParameter(param_name)
                     if not p:
@@ -740,18 +711,12 @@ def executar_fluxo_isometrico():
 
                 doc.Regenerate()
 
-                # Calcula ux_max de forma genérica:
-                # Coleta os outlines de todos os viewports já na prancha (são do carimbo).
-                # O MinimumPoint.X do viewport mais à direita é onde a área útil termina.
-                # Isso funciona com qualquer família de carimbo, sem depender de geometria
-                # ou tamanho fixo.
-                ux_max_calc = bb_sh.Max.X - (175.0 * mm)  # fallback
+                ux_max_calc = bb_sh.Max.X - (175.0 * mm)
                 try:
                     vps_carimbo = (FilteredElementCollector(doc, sh.Id)
                                    .OfClass(Viewport)
                                    .ToElements())
                     if vps_carimbo:
-                        # Ordena pelo MinimumPoint.X do outline — o mais à direita é o carimbo
                         outlines = []
                         for vp in vps_carimbo:
                             try:
@@ -760,7 +725,6 @@ def executar_fluxo_isometrico():
                             except:
                                 pass
                         if outlines:
-                            # O viewport mais à direita: maior MinimumPoint.X
                             outlines.sort(key=lambda o: o.MinimumPoint.X, reverse=True)
                             ux_max_calc = outlines[0].MinimumPoint.X - (5.0 * mm)
                 except:
@@ -775,148 +739,262 @@ def executar_fluxo_isometrico():
                 )
 
             sheet, ux_min, ux_max, uy_min, uy_max = nova_prancha()
-
-            # ------------------------------------------------------------------
-            # PASSO 1 — Criar viewports em posições de staging únicas (igual ao Detalhes+)
-            #           e medir dimensões REAIS + offsets antes de montar o layout.
-            # ------------------------------------------------------------------
             vp_infos = []
 
             for info in vistas_geradas:
-                v = doc.GetElement(info["id"])
-                if v is None:
+                v_3d = doc.GetElement(info["id"])
+                if v_3d is None:
                     vp_infos.append(None)
                     continue
 
-                if not Viewport.CanAddViewToSheet(doc, sheet.Id, v.Id):
-                    erros.append("Vista '{}' nao pode ser adicionada a prancha.".format(v.Name))
+                if not Viewport.CanAddViewToSheet(doc, sheet.Id, v_3d.Id):
+                    erros.append("Vista '%s' nao pode ser adicionada a prancha." % v_3d.Name)
                     vp_infos.append(None)
                     continue
 
-                vp = Viewport.Create(doc, sheet.Id, v.Id, XYZ(0, 0, 0))
-                doc.Regenerate()
+                placeholder_id = info.get("placeholder_id")
+                vp_3d = None
+                vp_fantasma_id = None
 
-                if vp_type_id != ElementId.InvalidElementId:
-                    vp.ChangeTypeId(vp_type_id)
+                if placeholder_id and Viewport.CanAddViewToSheet(doc, sheet.Id, placeholder_id):
+                    vp_fantasma = Viewport.Create(doc, sheet.Id, placeholder_id, XYZ(10, 10, 0))
+                    doc.Regenerate()
+                    
+                    if vp_fantasma:
+                        vp_fantasma_id = vp_fantasma.Id
+                        num_base = info["numero_detalhe"]
+                        numero_formatado = str(num_base).zfill(zeros)
+                        try:
+                            vp_fantasma.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER).Set(numero_formatado)
+                        except:
+                            pass
+                        vp_3d = Viewport.Create(doc, sheet.Id, v_3d.Id, XYZ(0, 0, 0))
+                        doc.Regenerate()
+                        if vp_3d:
+                            p_3d = vp_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                            if p_3d and not p_3d.IsReadOnly:
+                                p_3d.Set(numero_formatado + u"​")
+                else:
+                    vp_3d = Viewport.Create(doc, sheet.Id, v_3d.Id, XYZ(0, 0, 0))
                     doc.Regenerate()
 
-                outline = vp.GetBoxOutline()
-                real_w  = outline.MaximumPoint.X - outline.MinimumPoint.X
-                real_h  = outline.MaximumPoint.Y - outline.MinimumPoint.Y
+                if vp_3d and vp_type_id != ElementId.InvalidElementId:
+                    vp_3d.ChangeTypeId(vp_type_id)
+                    doc.Regenerate()
 
-                # Mede altura do título externo para reservar espaço vertical
-                label_h = 0.0
+                if vp_3d:
+                    outline = vp_3d.GetBoxOutline()
+                    box_w   = outline.MaximumPoint.X - outline.MinimumPoint.X
+                    box_h   = outline.MaximumPoint.Y - outline.MinimumPoint.Y
+                    label_h = 0.0
+                    try:
+                        lbl_outline = vp_3d.GetLabelOutline()
+                        if lbl_outline is not None:
+                            if lbl_outline.MinimumPoint.Y < outline.MinimumPoint.Y:
+                                label_h = lbl_outline.MaximumPoint.Y - lbl_outline.MinimumPoint.Y
+                    except:
+                        pass
+
+                    vp_infos.append({
+                        "vp":             vp_3d,
+                        "view_id":        v_3d.Id,
+                        "box_w":          box_w,
+                        "box_h":          box_h,
+                        "label_h":        label_h,
+                        "slot_w":         box_w,
+                        "slot_h":         box_h + label_h,
+                        "nome":           v_3d.Name,
+                        "placeholder_id": placeholder_id,
+                        "vp_fantasma_id": vp_fantasma_id,
+                        "numero_detalhe": info["numero_detalhe"],
+                    })
+                else:
+                    vp_infos.append(None)
+
+            # Filtra Nones
+            vp_infos = [vi for vi in vp_infos if vi is not None]
+
+            if not vp_infos:
+                t.Commit()
+                tg.Assimilate()
+                forms.alert("Nenhum viewport pôde ser criado.")
+                return
+
+            # ------------------------------------------------------------------
+            # GRADE ÓTIMA: calcula ncols/nrows com base no maior isométrico.
+            # Distribui ceil(restante/pranchas_restantes) por prancha para
+            # nunca deixar uma prancha com muito menos que as outras.
+            # ------------------------------------------------------------------
+            import math as _math
+
+            area_w = ux_max - ux_min
+            area_h = uy_max - uy_min
+            ref_sw = max(vi["slot_w"] for vi in vp_infos)
+            ref_sh = max(vi["slot_h"] for vi in vp_infos)
+
+            ncols = max(1, int((area_w + espacamento) / (ref_sw + espacamento)))
+            nrows = max(1, int((area_h + MARGEM_ENTRE_LINHAS) / (ref_sh + MARGEM_ENTRE_LINHAS)))
+            cap   = ncols * nrows
+            total = len(vp_infos)
+
+            n_pranchas = max(1, int(_math.ceil(total / float(cap))))
+
+            grupos_prancha = []
+            restante = list(vp_infos)
+            for _p in range(n_pranchas):
+                qtd = int(_math.ceil(len(restante) / float(n_pranchas - _p)))
+                grupos_prancha.append(restante[:qtd])
+                restante = restante[qtd:]
+
+            # ------------------------------------------------------------------
+            # POSICIONAMENTO: espaçamento uniforme X e Y, centralizado na prancha.
+            # LabelOffset: relê outline APÓS o move, usa só box_h.
+            # Ao mudar de prancha, recria viewports + fantasmas corretamente.
+            # ------------------------------------------------------------------
+
+            def _recriar_vp_na_prancha(sh_dest, vi):
+                """Deleta vp (e fantasma) existente e recria tudo na nova prancha."""
+                if vi.get("vp_fantasma_id"):
+                    try:
+                        doc.Delete(vi["vp_fantasma_id"])
+                        doc.Regenerate()
+                    except:
+                        pass
                 try:
-                    lbl_outline = vp.GetLabelOutline()
-                    if lbl_outline is not None:
-                        if lbl_outline.MinimumPoint.Y < outline.MinimumPoint.Y:
-                            label_h = lbl_outline.MaximumPoint.Y - lbl_outline.MinimumPoint.Y
+                    doc.Delete(vi["vp"].Id)
+                    doc.Regenerate()
                 except:
                     pass
 
-                vp_infos.append({
-                    "vp":      vp,
-                    "view_id": v.Id,
-                    "real_w":  real_w,
-                    "real_h":  real_h + label_h,
-                    "nome":    v.Name,
-                })
+                ph_id  = vi.get("placeholder_id")
+                new_vp = None
+                new_fantasma_id = None
 
-            # ------------------------------------------------------------------
-            # PASSO 2 — Agrupar em linhas pela largura real
-            # ------------------------------------------------------------------
-            linhas      = []
-            linha_atual = []
-            tmp_x       = ux_min
-
-            for vp_info in vp_infos:
-                if vp_info is None:
-                    continue
-                rw = vp_info["real_w"]
-                if tmp_x + rw > ux_max and tmp_x > ux_min:
-                    linhas.append(linha_atual)
-                    linha_atual = [vp_info]
-                    tmp_x = ux_min + rw + espacamento
+                if ph_id and Viewport.CanAddViewToSheet(doc, sh_dest.Id, ph_id):
+                    vp_f = Viewport.Create(doc, sh_dest.Id, ph_id, XYZ(10, 10, 0))
+                    doc.Regenerate()
+                    if vp_f:
+                        new_fantasma_id = vp_f.Id
+                        num_fmt = str(vi["numero_detalhe"]).zfill(zeros)
+                        try:
+                            vp_f.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER).Set(num_fmt)
+                        except:
+                            pass
+                        new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
+                        doc.Regenerate()
+                        if new_vp:
+                            p_3d = new_vp.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                            if p_3d and not p_3d.IsReadOnly:
+                                p_3d.Set(num_fmt + u"​")
                 else:
-                    linha_atual.append(vp_info)
-                    tmp_x += rw + espacamento
+                    new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
+                    doc.Regenerate()
 
-            if linha_atual:
-                linhas.append(linha_atual)
+                if new_vp and vp_type_id != ElementId.InvalidElementId:
+                    new_vp.ChangeTypeId(vp_type_id)
+                    doc.Regenerate()
 
-            # ------------------------------------------------------------------
-            # PASSO 3 — Posicionar usando offsets guardados (igual ao Detalhes+)
-            # ------------------------------------------------------------------
-            cur_y = uy_max
+                if new_vp:
+                    ol   = new_vp.GetBoxOutline()
+                    bw   = ol.MaximumPoint.X - ol.MinimumPoint.X
+                    bh   = ol.MaximumPoint.Y - ol.MinimumPoint.Y
+                    lh   = 0.0
+                    try:
+                        lbl_ol = new_vp.GetLabelOutline()
+                        if lbl_ol is not None and lbl_ol.MinimumPoint.Y < ol.MinimumPoint.Y:
+                            lh = lbl_ol.MaximumPoint.Y - lbl_ol.MinimumPoint.Y
+                    except:
+                        pass
+                    vi["vp"]           = new_vp
+                    vi["box_w"]        = bw
+                    vi["box_h"]        = bh
+                    vi["label_h"]      = lh
+                    vi["slot_w"]       = bw
+                    vi["slot_h"]       = bh + lh
+                    vi["vp_fantasma_id"] = new_fantasma_id
 
-            for linha in linhas:
-                rh_max = max(vi["real_h"] for vi in linha)
+            primeira_prancha = sheet
 
-                if cur_y - (rh_max + MARGEM_ENTRE_LINHAS) < uy_min:
-                    sheet, ux_min, ux_max, uy_min, uy_max = nova_prancha()
-                    cur_y = uy_max
+            for p_idx, grupo in enumerate(grupos_prancha):
+                if p_idx == 0:
+                    sh_atual = primeira_prancha
+                    ux_min_p, ux_max_p, uy_min_p, uy_max_p = ux_min, ux_max, uy_min, uy_max
+                else:
+                    sh_atual, ux_min_p, ux_max_p, uy_min_p, uy_max_p = nova_prancha()
+                    for vi in grupo:
+                        _recriar_vp_na_prancha(sh_atual, vi)
+
+                area_w_p = ux_max_p - ux_min_p
+                area_h_p = uy_max_p - uy_min_p
+
+                # Divide em linhas respeitando ncols
+                linhas_g = [grupo[i:i + ncols] for i in range(0, len(grupo), ncols)]
+                n_lin    = len(linhas_g)
+
+                alt_lins = [max(vi["slot_h"] for vi in ln) for ln in linhas_g]
+                tot_h    = sum(alt_lins)
+
+                # gap_y uniforme, nunca menor que MARGEM_ENTRE_LINHAS
+                if n_lin > 1:
+                    gap_y = max(MARGEM_ENTRE_LINHAS, (area_h_p - tot_h) / float(n_lin - 1))
+                else:
+                    gap_y = 0.0
+
+                # Centraliza verticalmente
+                bloco_h = tot_h + gap_y * (n_lin - 1)
+                cur_y_p = uy_max_p - (area_h_p - bloco_h) / 2.0
+
+                for l_idx, linha in enumerate(linhas_g):
+                    rh_max = alt_lins[l_idx]
+                    n_col  = len(linha)
+                    tot_w  = sum(vi["slot_w"] for vi in linha)
+
+                    # gap_x uniforme, nunca menor que espacamento
+                    if n_col > 1:
+                        gap_x = max(espacamento, (area_w_p - tot_w) / float(n_col - 1))
+                    else:
+                        gap_x = 0.0
+
+                    # Centraliza horizontalmente
+                    bloco_w = tot_w + gap_x * (n_col - 1)
+                    cur_x_p = ux_min_p + (area_w_p - bloco_w) / 2.0
+                    base_y  = cur_y_p - rh_max
 
                     for vi in linha:
-                        view_id = vi["view_id"]
                         try:
-                            doc.Delete(vi["vp"].Id)
+                            vp = vi["vp"]
+                            if vp is None:
+                                continue
+                            ol = vp.GetBoxOutline()
+                            DB.ElementTransformUtils.MoveElement(
+                                doc, vp.Id,
+                                XYZ(cur_x_p - ol.MinimumPoint.X,
+                                    base_y  - ol.MinimumPoint.Y, 0))
                             doc.Regenerate()
-                        except:
-                            pass
-                        new_vp = Viewport.Create(doc, sheet.Id, view_id, XYZ(0, 0, 0))
-                        doc.Regenerate()
-                        if vp_type_id != ElementId.InvalidElementId:
-                            new_vp.ChangeTypeId(vp_type_id)
+
+                            # Relê outline APÓS o move; usa só box_h
+                            # para não acumular label_h no offset.
+                            ol2   = vp.GetBoxOutline()
+                            bh_mv = ol2.MaximumPoint.Y - ol2.MinimumPoint.Y
+                            ol2 = vp.GetBoxOutline()
+                            center_y = (ol2.MaximumPoint.Y + ol2.MinimumPoint.Y) / 2.0
+                            bottom_y  = ol2.MinimumPoint.Y
+                            vp.LabelOffset = XYZ(0.0, bottom_y - center_y - (-100.0 * mm), 0)
                             doc.Regenerate()
-                        outline = new_vp.GetBoxOutline()
-                        label_h = 0.0
-                        try:
-                            lbl_ol = new_vp.GetLabelOutline()
-                            if lbl_ol is not None and lbl_ol.MinimumPoint.Y < outline.MinimumPoint.Y:
-                                label_h = lbl_ol.MaximumPoint.Y - lbl_ol.MinimumPoint.Y
-                        except:
-                            pass
-                        vi["vp"]     = new_vp
-                        vi["real_w"] = outline.MaximumPoint.X - outline.MinimumPoint.X
-                        vi["real_h"] = (outline.MaximumPoint.Y - outline.MinimumPoint.Y) + label_h
+                        except Exception as e:
+                            erros.append("Erro ao posicionar '%s': %s" % (vi["nome"], str(e)))
+                        cur_x_p += vi["slot_w"] + gap_x
 
-                    rh_max = max(vi["real_h"] for vi in linha)
-
-                baseline_y = cur_y - rh_max
-                cur_x      = ux_min
-
-                for vi in linha:
-                    real_w = 0.0
-                    try:
-                        vp     = vi["vp"]
-                        real_w = vi["real_w"]
-                        real_h = vi["real_h"]
-
-                        outline = vp.GetBoxOutline()
-                        shift_x = cur_x - outline.MinimumPoint.X
-                        shift_y = baseline_y - outline.MinimumPoint.Y
-
-                        DB.ElementTransformUtils.MoveElement(doc, vp.Id, XYZ(shift_x, shift_y, 0))
-                        doc.Regenerate()
-
-                        vp.LabelOffset = XYZ(0.0, -(real_h / 2.0) + (15.0 * mm), 0)
-                        doc.Regenerate()
-
-                    except Exception as e:
-                        erros.append("Erro ao posicionar vista '{}': {}".format(vi["nome"], str(e)))
-
-                    cur_x += real_w + espacamento
-
-                cur_y -= (rh_max + MARGEM_ENTRE_LINHAS)
+                    cur_y_p -= (rh_max + gap_y)
 
             t.Commit()
+
         tg.Assimilate()
 
-    msg = "Concluído! {} isométrico(s) criado(s) e paginado(s).".format(len(vistas_geradas))
+    msg = "Concluído! %d isométrico(s) criado(s) e paginado(s)." % len(vistas_geradas)
     if erros:
-        msg += "\n\nAvisos ({}):\n{}".format(len(erros), "\n".join(erros))
+        msg += "\n\nAvisos (%d):\n%s" % (len(erros), "\n".join(erros))
     forms.alert(msg)
-
 
 if __name__ == '__main__':
     executar_fluxo_isometrico()
