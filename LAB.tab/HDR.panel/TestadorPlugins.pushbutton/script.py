@@ -47,7 +47,7 @@ MARGEM_DIR_MM   = 180.0
 MARGEM_SUP_MM   = 10.0
 MARGEM_INF_MM   = 10.0
 
-ESCALAS_VALIDAS = [50, 75, 100]
+ESCALAS_VALIDAS = [50, 75]
 
 SIGLA_TO_PARAM = {
     "EE":   "Projeto de Elétrica",
@@ -1610,7 +1610,7 @@ def executar_fluxo_excel_wpf():
                     doc.Regenerate()
                     bb_tb = tb_instance.get_BoundingBox(sheet)
                     if bb_tb:
-                        margem_direita_mm = 25.0 
+                        margem_direita_mm = 9.0 
                         altura_selo_mm = 135.0    
                         target_x_max = bb_tb.Max.X - (margem_direita_mm / 304.8)
                         current_y_min = bb_tb.Min.Y + (altura_selo_mm / 304.8)
@@ -1670,9 +1670,9 @@ def executar_fluxo_excel_wpf():
                     out_vp = vp_elem.GetBoxOutline()
                     w_vp = out_vp.MaximumPoint.X - out_vp.MinimumPoint.X
                     h_vp = out_vp.MaximumPoint.Y - out_vp.MinimumPoint.Y
-                    
-                    target_x = util_min_x + (w_vp / 2.0)
-                    target_y = util_max_y - (h_vp / 2.0)
+                    GAP_X = 5/304.8
+                    target_x = util_min_x + ((GAP_X + w_vp) / 2.0)
+                    target_y = (util_max_y + util_min_y) / 2.0
                     
                     orig_anno = None
                     try:
