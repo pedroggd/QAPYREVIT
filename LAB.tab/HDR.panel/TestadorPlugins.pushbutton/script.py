@@ -47,7 +47,7 @@ MARGEM_DIR_MM   = 180.0
 MARGEM_SUP_MM   = 10.0
 MARGEM_INF_MM   = 10.0
 
-ESCALAS_VALIDAS = [50, 75]
+ESCALAS_VALIDAS = [50, 75, 100]
 
 SIGLA_TO_PARAM = {
     "EE":   "Projeto de Elétrica",
@@ -154,11 +154,13 @@ def importar_lista_mestra_banco():
     path = forms.pick_file(file_ext="xlsx", title="Selecione a Lista Mestra Excel")
     if not path: return None
 
-    # Mapeamento fixo
+    # Mapeamento de colunas por aba
+    # C.I CIVIL: G=COD(7), H=DISC(8), I=ETAP(9), J=NUMERACAO(10), K=ARQUIVO(11),
+    #            L=DESC(12), M=REV(13), N=NOME(14), P=TITULO(16)
     CONFIG_ABAS = {
-        "C.I CIVIL": {"COD": 7, "PROJ": 8, "DISC": 9, "ETAP": 10, "PRANCHA": 11, "NOME": 12},
-        "C.I ELE":   {"COD": 11, "PROJ": 7, "DISC": 8, "ETAP": 12, "PRANCHA": 13, "NOME": 16},
-        "C.I MEC":   {"COD": 11, "PROJ": 7, "DISC": 8, "ETAP": 12, "PRANCHA": 13, "NOME": 16}
+        "C.I CIVIL": {"COD": 7, "DISC": 8, "ETAP": 9, "NUMERACAO": 10, "ARQUIVO": 11, "DESC": 12, "REV": 13, "NOME": 14, "TITULO": 16},
+        "C.I ELE":   {"COD": 11, "DISC": 8, "ETAP": 12, "NUMERACAO": 13, "ARQUIVO": 13, "DESC": 14, "REV": 15, "NOME": 14, "TITULO": 16},
+        "C.I MEC":   {"COD": 11, "DISC": 8, "ETAP": 12, "NUMERACAO": 13, "ARQUIVO": 13, "DESC": 14, "REV": 15, "NOME": 14, "TITULO": 16}
     }
 
     aba_selecionada = forms.alert("Selecione a aba:", options=CONFIG_ABAS.keys())
@@ -184,39 +186,53 @@ def importar_lista_mestra_banco():
         wb = app_excel.Workbooks.Open(path, False, True)
         ws = wb.Sheets(aba_selecionada)
         
-        # VARREDURA TOTAL: Vai da linha 4 até a 1000, sem parar no primeiro erro
+        # VARREDURA TOTAL: Vai da linha 3 até a 1000, sem parar no primeiro erro
         for linha in range(3, 1000):
-            codigo      = limpar(ws.Cells[linha, col["COD"]].Value2)
-            projeto     = limpar(ws.Cells[linha, col["PROJ"]].Value2)
-            disciplina  = limpar(ws.Cells[linha, col["DISC"]].Value2)
-            etapa       = limpar(ws.Cells[linha, col["ETAP"]].Value2)
-            prancha_raw = limpar(ws.Cells[linha, col["PRANCHA"]].Value2)
-            nome_prancha= limpar(ws.Cells[linha, col["NOME"]].Value2)
+            codigo       = limpar(ws.Cells[linha, col["COD"]].Value2)
+            disciplina   = limpar(ws.Cells[linha, col["DISC"]].Value2)
+            etapa        = limpar(ws.Cells[linha, col["ETAP"]].Value2)
+            numeracao    = limpar(ws.Cells[linha, col["NUMERACAO"]].Value2)
+            arquivo      = limpar(ws.Cells[linha, col["ARQUIVO"]].Value2)
+            descricao    = limpar(ws.Cells[linha, col["DESC"]].Value2)
+            revisao      = limpar(ws.Cells[linha, col["REV"]].Value2)
+            nome_arquivo = limpar(ws.Cells[linha, col["NOME"]].Value2)   # coluna N - nome montado
+            titulo       = limpar(ws.Cells[linha, col["TITULO"]].Value2) # coluna P - título legível
 
-            # Só ignora se não tiver NADA na linha
-            if not codigo and not prancha_raw and not nome_prancha:
+            # Só ignora se não tiver NADA relevante na linha
+            if not codigo and not numeracao and not nome_arquivo:
                 continue
-            
-            # Se tiver prancha ou código, processa (independente da disciplina)
-            if prancha_raw:
-                prancha = prancha_raw.zfill(2) if prancha_raw.isdigit() else prancha_raw
-                titulo_estruturado = "{}-{}-{}-{}-{}".format(codigo, projeto, disciplina, etapa, prancha)
-                
+
+            # Processa se tiver numeração ou nome de arquivo
+            if numeracao or nome_arquivo:
+                # Número da prancha: usa NUMERACAO (col J), zerado com 4 dígitos se numérico
+                prancha = numeracao.zfill(4) if numeracao.isdigit() else numeracao
+
+                # Usa o NOME DO ARQUIVO da coluna N se disponível,
+                # senão monta manualmente a partir dos campos individuais
+                if nome_arquivo:
+                    titulo_estruturado = nome_arquivo  # ex: "3160-HID-PE-0100-PLA-2SS-R00"
+                else:
+                    titulo_estruturado = "{}-{}-{}-{}-{}-{}-{}".format(
+                        codigo, disciplina, etapa, prancha, arquivo, descricao, revisao
+                    )
+
                 num_final = prancha
                 # Garante exclusividade no Revit
-                while num_final in numeros_existentes: num_final += "*"
+                while num_final in numeros_existentes:
+                    num_final += "*"
                 numeros_existentes.add(num_final)
-                
+
                 sigla_limpa = disciplina.upper()
-                if sigla_limpa: siglas_encontradas.add(sigla_limpa)
+                if sigla_limpa:
+                    siglas_encontradas.add(sigla_limpa)
 
                 banco_pranchas[num_final] = {
-                    "numero": num_final,
-                    "descricao": nome_prancha,      
-                    "nome_arquivo": titulo_estruturado, 
-                    "sigla": sigla_limpa
+                    "numero":         num_final,
+                    "descricao":      titulo,            # coluna P: ex "PLANTA PAVIMENTO 2º SUBSOLO"
+                    "nome_arquivo":   titulo_estruturado, # coluna N: ex "3160-HID-PE-0100-PLA-2SS-R00"
+                    "sigla":          sigla_limpa
                 }
-                
+
     except Exception as e:
         forms.alert("Erro fatal na leitura: {}".format(e))
     finally:
@@ -409,14 +425,14 @@ def escolher_melhor_titleblock(modelo_w, modelo_h, tb_preferido, todos_tbs, nome
     melhor_tb     = None
     melhor_escala = None
 
-    for tb_sym, util_w, util_h, nome_tipo in todos_tbs_ordenados:
-        for escala in sorted(ESCALAS_VALIDAS):
+    for escala in sorted(ESCALAS_VALIDAS):
+        for tb_sym, util_w, util_h, nome_tipo in todos_tbs_ordenados:
             vista_w = modelo_w / float(escala)
             vista_h = modelo_h / float(escala)
-            
+
             cabe_normal   = (vista_w <= util_w and vista_h <= util_h)
             cabe_rotacion = (vista_h <= util_w and vista_w <= util_h)
-            
+
             if (cabe_normal or cabe_rotacion) and h_leg_total <= util_h:
                 melhor_tb     = tb_sym
                 melhor_escala = escala
