@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 
-__title__ = "AutoIso3D\n+"
+__title__ = "HDR-Detalhe Automático+\n"
 __author__ = "PyRevit Plugin"
 
 import clr
 import System
+import math
 import re
 
 clr.AddReference("PresentationFramework")
@@ -15,7 +16,7 @@ from System.Windows import Window, Thickness, GridLength, GridUnitType
 from System.Windows.Controls import (
     StackPanel, Label, TextBox, Button, ScrollViewer,
     Separator, Grid, ColumnDefinition, RowDefinition, ComboBox, ComboBoxItem,
-    TabControl, TabItem, CheckBox
+    TabControl, TabItem
 )
 from System.Windows.Media import SolidColorBrush, Color
 from System.Windows import FontWeights, ResizeMode, WindowStartupLocation
@@ -25,8 +26,8 @@ from pyrevit import forms, revit, script
 from Autodesk.Revit.DB import (
     FilteredElementCollector, FamilySymbol, ViewFamilyType, ViewFamily,
     ViewSheet, Transaction, TransactionGroup, BuiltInCategory, BuiltInParameter,
-    Viewport, XYZ, View3D, BoundingBoxXYZ, ElementId, StorageType,
-    ViewType, Level, Options, Line, GeometryInstance
+    ViewDuplicateOption, Viewport, XYZ,
+    ViewType, StorageType, BoundingBoxXYZ, ElementId, Options, Line, GeometryInstance
 )
 import Autodesk.Revit.DB as DB
 import Autodesk.Revit.Exceptions as Exceptions
@@ -36,10 +37,10 @@ logger = script.get_logger()
 doc   = revit.doc
 uidoc = revit.uidoc
 
-FAMILIA_NOME = "GRAF23-Carimbo (NBR-16752) - PLAENGE"
+FAMILIA_NOME = "GRAF23-Carimbo (MEP-EBSERH)"
 
 PARAMS_CARIMBO = [
-    ("Numero do Logo",  "Numero do Logo"),
+    ("Número do Logo",  "Número do Logo"),
     ("OBRA",            "Obra"),
     ("CLIENTE",         "Nome do Cliente"),
     ("LOCAL",           "Local"),
@@ -54,19 +55,24 @@ PARAMS_CARIMBO = [
 
 def remove_accents(s):
     if not s: return ""
+    try:
+        if isinstance(s, str):
+            s = s.decode('utf-8')
+    except:
+        pass
     mapping = {
-        u'\u00c1': u'A', u'\u00c0': u'A', u'\u00c3': u'A', u'\u00c2': u'A',
-        u'\u00c9': u'E', u'\u00c8': u'E', u'\u00ca': u'E',
-        u'\u00cd': u'I', u'\u00cc': u'I', u'\u00ce': u'I',
-        u'\u00d3': u'O', u'\u00d2': u'O', u'\u00d5': u'O', u'\u00d4': u'O',
-        u'\u00da': u'U', u'\u00d9': u'U', u'\u00db': u'U',
-        u'\u00c7': u'C',
-        u'\u00e1': u'a', u'\u00e0': u'a', u'\u00e3': u'a', u'\u00e2': u'a',
-        u'\u00e9': u'e', u'\u00e8': u'e', u'\u00ea': u'e',
-        u'\u00ed': u'i', u'\u00ec': u'i', u'\u00ee': u'i',
-        u'\u00f3': u'o', u'\u00f2': u'o', u'\u00f5': u'o', u'\u00f4': u'o',
-        u'\u00fa': u'u', u'\u00f9': u'u', u'\u00fb': u'u',
-        u'\u00e7': u'c', u'\u00ba': u'o', u'\u00aa': u'a',
+        u'Á':u'A', u'À':u'A', u'Ã':u'A', u'Â':u'A',
+        u'É':u'E', u'È':u'E', u'Ê':u'E',
+        u'Í':u'I', u'Ì':u'I', u'Î':u'I',
+        u'Ó':u'O', u'Ò':u'O', u'Õ':u'O', u'Ô':u'O',
+        u'Ú':u'U', u'Ù':u'U', u'Û':u'U',
+        u'Ç':u'C',
+        u'á':u'a', u'à':u'a', u'ã':u'a', u'â':u'a',
+        u'é':u'e', u'è':u'e', u'ê':u'e',
+        u'í':u'i', u'ì':u'i', u'î':u'i',
+        u'ó':u'o', u'ò':u'o', u'õ':u'o', u'ô':u'o',
+        u'ú':u'u', u'ù':u'u', u'û':u'u',
+        u'ç':u'c', u'º':u'o', u'ª':u'a'
     }
     for k, v in mapping.items():
         s = s.replace(k, v)
@@ -74,40 +80,6 @@ def remove_accents(s):
 
 def sanitize_name(name):
     return re.sub(r'[\\:\{\}\[\]|;<>?\'~]', '-', name).strip()
-
-def _proximo_contador(prefixo, identificador, num_inicial, sufixo):
-    maior_num = num_inicial - 1
-    for v in FilteredElementCollector(doc).OfClass(DB.View):
-        if v.IsTemplate: continue
-        p_pref  = re.escape(prefixo)       if prefixo       else ""
-        p_ident = re.escape(identificador) if identificador else ""
-        p_suf   = re.escape(sufixo)        if sufixo        else ""
-        pattern = r'^'
-        if p_pref:  pattern += p_pref  + r'\s*'
-        if p_ident: pattern += p_ident
-        pattern += r'(\d+)'
-        if p_suf:   pattern += r'\s*' + p_suf
-        pattern += r'$'
-        match = re.search(pattern, v.Name, re.IGNORECASE)
-        if match:
-            try:
-                num = int(match.group(1))
-                if num > maior_num:
-                    maior_num = num
-            except:
-                pass
-    return maior_num + 1
-
-def get_unique_view_name(base_name):
-    existing = {v.Name for v in FilteredElementCollector(doc).OfClass(DB.View)}
-    if base_name not in existing:
-        return base_name
-    i = 1
-    while True:
-        candidate = "%s (%d)" % (base_name, i)
-        if candidate not in existing:
-            return candidate
-        i += 1
 
 def get_titleblock_symbols_by_family():
     by_family = {}
@@ -122,13 +94,16 @@ def get_titleblock_symbols_by_family():
         by_family[fam][tipo] = s
     return by_family
 
-def get_3d_view_family_types():
+def get_callout_types():
     tipos = {}
-    for vft in FilteredElementCollector(doc).OfClass(ViewFamilyType):
-        if vft.ViewFamily == ViewFamily.ThreeDimensional:
-            p = vft.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
-            nome = p.AsString() if p else vft.Id.ToString()
-            tipos[nome] = vft
+    for ct in FilteredElementCollector(doc).OfClass(ViewFamilyType):
+        if ct.ViewFamily in [ViewFamily.FloorPlan, ViewFamily.Detail]:
+            param = ct.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+            if param:
+                nome = param.AsString()
+                familia = "Planta de Piso" if ct.ViewFamily == ViewFamily.FloorPlan else "Vista de Detalhe"
+                label = "{} [{}]".format(nome, familia)
+                tipos[label] = ct.Id
     return tipos
 
 def get_viewport_types():
@@ -144,40 +119,46 @@ def get_viewport_types():
             continue
     return tipos
 
-def criar_placeholder_drafting_view(nome_base, drafting_vft_id):
-    nome = get_unique_view_name(nome_base + " - REF")
-    nova_drafting = DB.ViewDrafting.Create(doc, drafting_vft_id)
-    nova_drafting.Name = nome
-    try:
-        pt1 = XYZ(0, 0, 0)
-        pt2 = XYZ(0.01, 0, 0)
-        linha = DB.Line.CreateBound(pt1, pt2)
-        doc.Create.NewDetailCurve(nova_drafting, linha)
-    except:
-        pass
-    return nova_drafting
+def get_legend_views():
+    legends = {}
+    for v in FilteredElementCollector(doc).OfClass(DB.View):
+        if v.ViewType == ViewType.Legend and not v.IsTemplate:
+            legends[v.Name] = v
+    return legends
 
+def get_unique_view_name(base_name):
+    existing_names = {v.Name for v in FilteredElementCollector(doc).OfClass(DB.View)}
+    if base_name not in existing_names:
+        return base_name
+    contador = 1
+    while True:
+        new_name = "{} ({})".format(base_name, contador)
+        if new_name not in existing_names:
+            return new_name
+        contador += 1
 
-# ---------------------------------------------------------------------------
-# JANELA DE CONFIGURAÇÃO
-# ---------------------------------------------------------------------------
-class IsometricConfigWindow(Window):
+class CalloutConfigWindow(Window):
     COR_AZUL   = Color.FromRgb(30, 80, 160)
     COR_VERDE  = Color.FromRgb(22, 160, 80)
     COR_CINZA  = Color.FromRgb(120, 120, 120)
     COR_BRANCO = Color.FromRgb(255, 255, 255)
     COR_FUNDO  = Color.FromRgb(245, 245, 245)
+    COR_VERM   = Color.FromRgb(200, 50, 50)
 
-    def __init__(self, templates_dict, view_types_dict, titleblock_symbols, viewport_types_dict):
-        self.templates_dict      = templates_dict
-        self.view_types_dict     = view_types_dict
-        self.viewport_types_dict = viewport_types_dict
-        self.resultado           = None
+    def __init__(self, templates_dict, callout_types_dict, titleblock_symbols, viewport_types_dict, legends_dict):
+        self.templates_dict     = templates_dict
+        self.callout_types_dict = callout_types_dict
+        self.legends_dict       = legends_dict
+        self.resultado          = None
 
-        self._template_names  = sorted(templates_dict.keys())
-        self._view_type_names = sorted(view_types_dict.keys())
-        self.campos_carimbo   = {}
+        self._template_names     = sorted(templates_dict.keys())
+        self._callout_type_names = sorted(callout_types_dict.keys())
+        self.campos_carimbo      = {}
 
+        # lista ordenada de legendas selecionadas (nomes)
+        self._legendas_ordenadas = []
+
+        self.viewport_types_dict  = viewport_types_dict
         NOME_VP_PREF = remove_accents("01. Titulo do Desenho-Com Escala (NBR-6492) 2").upper()
         self._vp_type_labels = sorted(viewport_types_dict.keys())
         self._vp_type_best   = 0
@@ -191,22 +172,21 @@ class IsometricConfigWindow(Window):
 
         self._tb_labels  = []
         self._tb_symbols = {}
-
         def _add_family(fam_name):
             if fam_name not in titleblock_symbols:
                 return
             for tipo in sorted(titleblock_symbols[fam_name].keys()):
-                lbl = "%s : %s" % (fam_name, tipo)
+                lbl = "{} : {}".format(fam_name, tipo)
                 self._tb_labels.append(lbl)
                 self._tb_symbols[lbl] = titleblock_symbols[fam_name][tipo]
-
         _add_family(FAMILIA_NOME)
         for fam in sorted(titleblock_symbols.keys()):
             if fam != FAMILIA_NOME:
                 _add_family(fam)
 
-        self.Title         = "Configuracao de Isometricos"
-        self.Width         = 500
+        self.Title         = "Configuração de Callouts"
+        self.Width         = 480
+        self.MinHeight     = 650
         self.SizeToContent = System.Windows.SizeToContent.Height
         self.ResizeMode    = ResizeMode.CanResizeWithGrip
         self.WindowStartupLocation = WindowStartupLocation.CenterScreen
@@ -218,24 +198,24 @@ class IsometricConfigWindow(Window):
         root.RowDefinitions.Add(self._row(GridLength(1, GridUnitType.Star)))
         root.RowDefinitions.Add(self._row(GridLength.Auto))
 
-        header = StackPanel()
-        self._lbl(header, "Criar Isometricos+", 16, bold=True, cor=self.COR_AZUL, mg=(0, 0, 0, 2))
-        header.Children.Add(self._sep(10))
-        Grid.SetRow(header, 0)
-        root.Children.Add(header)
+        header_panel = StackPanel()
+        self._lbl(header_panel, "HDR-Detalhe Automático+", 16, bold=True, cor=self.COR_AZUL, mg=(0,0,0,2))
+        header_panel.Children.Add(self._sep(10))
+        Grid.SetRow(header_panel, 0)
+        root.Children.Add(header_panel)
 
         self.tabs = TabControl()
         self.tabs.FontSize = 12
-        self.tabs.Margin   = Thickness(0, 0, 0, 12)
+        self.tabs.Margin = Thickness(0, 0, 0, 12)
         Grid.SetRow(self.tabs, 1)
         root.Children.Add(self.tabs)
 
         self._build_tab_config()
-        self._build_tab_prancha()
         self._build_tab_carimbo()
+        self._build_tab_legenda()
 
         btn_ok = Button()
-        btn_ok.Content    = "OK - Iniciar Selecao de Area"
+        btn_ok.Content    = "OK — Iniciar Desenho de Callouts"
         btn_ok.FontSize   = 12
         btn_ok.FontWeight = FontWeights.Bold
         btn_ok.Padding    = Thickness(10, 8, 10, 8)
@@ -262,20 +242,20 @@ class IsometricConfigWindow(Window):
         lbl.FontSize = size
         if bold: lbl.FontWeight = FontWeights.Bold
         if cor:  lbl.Foreground = SolidColorBrush(cor)
-        if mg:   lbl.Margin     = Thickness(*mg)
+        if mg:   lbl.Margin     = Thickness(*mg) if len(mg) > 1 else Thickness(mg[0])
         if parent is not None:
             parent.Children.Add(lbl)
         return lbl
 
     def _build_tab_config(self):
         tab = TabItem()
-        tab.Header = "Configuracoes"
+        tab.Header = "Configurações"
         scroll = ScrollViewer()
         scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         pnl = StackPanel()
         pnl.Margin = Thickness(12)
 
-        self._lbl(pnl, "Nome / Prefixo (ex: 'DETALHE', 'ISO'):", 11, bold=True, mg=(0, 0, 0, 4))
+        self._lbl(pnl, "Prefixo (ex: 'DETALHE', 'DET.'):", 11, bold=True, mg=(0, 0, 0, 4))
         self.txt_prefixo = TextBox()
         self.txt_prefixo.FontSize = 12
         self.txt_prefixo.Padding  = Thickness(6, 4, 6, 4)
@@ -283,12 +263,12 @@ class IsometricConfigWindow(Window):
         self.txt_prefixo.Text     = "DET."
         pnl.Children.Add(self.txt_prefixo)
 
-        self._lbl(pnl, "Identificador (ex: 'H', 'S', ou vazio):", 11, bold=True, mg=(0, 0, 0, 4))
+        self._lbl(pnl, "Identificador do Contador (ex: 'S', 'H' ou deixe vazio):", 11, bold=True, mg=(0, 0, 0, 4))
         self.txt_identificador = TextBox()
         self.txt_identificador.FontSize = 12
         self.txt_identificador.Padding  = Thickness(6, 4, 6, 4)
         self.txt_identificador.Margin   = Thickness(0, 0, 0, 12)
-        self.txt_identificador.Text     = "H"
+        self.txt_identificador.Text     = "S"
         pnl.Children.Add(self.txt_identificador)
 
         g_cont = Grid()
@@ -296,38 +276,44 @@ class IsometricConfigWindow(Window):
         g_cont.ColumnDefinitions.Add(self._col(GridLength(1, GridUnitType.Star)))
         g_cont.ColumnDefinitions.Add(self._col(GridLength(1, GridUnitType.Star)))
 
-        pnl_num = StackPanel(); pnl_num.Margin = Thickness(0, 0, 4, 0)
-        self._lbl(pnl_num, "Numero Inicial:", 11, bold=True, mg=(0, 0, 0, 4))
+        pnl_num = StackPanel()
+        pnl_num.Margin = Thickness(0, 0, 4, 0)
+        self._lbl(pnl_num, "Número Inicial:", 11, bold=True, mg=(0, 0, 0, 4))
         self.txt_num_inicial = TextBox()
         self.txt_num_inicial.FontSize = 12
         self.txt_num_inicial.Padding  = Thickness(6, 4, 6, 4)
-        self.txt_num_inicial.Text     = "01"
+        self.txt_num_inicial.Text     = "1"
         pnl_num.Children.Add(self.txt_num_inicial)
-        Grid.SetColumn(pnl_num, 0); g_cont.Children.Add(pnl_num)
+        Grid.SetColumn(pnl_num, 0)
+        g_cont.Children.Add(pnl_num)
 
-        pnl_zero = StackPanel(); pnl_zero.Margin = Thickness(4, 0, 0, 0)
-        self._lbl(pnl_zero, "Formato do Numero:", 11, bold=True, mg=(0, 0, 0, 4))
-        self.combo_zeros = ComboBox(); self.combo_zeros.FontSize = 11
-        for label in ["1 digito (1, 2, 3)", "2 digitos (01, 02)", "3 digitos (001, 002)"]:
-            it = ComboBoxItem(); it.Content = label
-            self.combo_zeros.Items.Add(it)
+        pnl_zero = StackPanel()
+        pnl_zero.Margin = Thickness(4, 0, 0, 0)
+        self._lbl(pnl_zero, "Formato do Número:", 11, bold=True, mg=(0, 0, 0, 4))
+        self.combo_zeros = ComboBox()
+        self.combo_zeros.FontSize = 11
+        i1 = ComboBoxItem(); i1.Content = "1 dígito (ex: 1, 2, 3)"
+        i2 = ComboBoxItem(); i2.Content = "2 dígitos (ex: 01, 02)"
+        self.combo_zeros.Items.Add(i1)
+        self.combo_zeros.Items.Add(i2)
         self.combo_zeros.SelectedIndex = 1
         pnl_zero.Children.Add(self.combo_zeros)
-        Grid.SetColumn(pnl_zero, 1); g_cont.Children.Add(pnl_zero)
+        Grid.SetColumn(pnl_zero, 1)
+        g_cont.Children.Add(pnl_zero)
 
         pnl.Children.Add(g_cont)
 
-        self._lbl(pnl, "Sufixo (ex: '- 1 TIPO' ou vazio):", 11, bold=True, mg=(0, 0, 0, 4))
+        self._lbl(pnl, "Sufixo (ex: '- PAVIMENTO TÉRREO' ou vazio):", 11, bold=True, mg=(0, 0, 0, 4))
         self.txt_sufixo = TextBox()
         self.txt_sufixo.FontSize = 12
         self.txt_sufixo.Padding  = Thickness(6, 4, 6, 4)
         self.txt_sufixo.Margin   = Thickness(0, 0, 0, 16)
-        self.txt_sufixo.Text     = ""
+        self.txt_sufixo.Text     = "- PAVIMENTO TÉRREO"
         pnl.Children.Add(self.txt_sufixo)
 
         pnl.Children.Add(self._sep(10))
 
-        self._lbl(pnl, "Template de Vista 3D:", 11, bold=True, mg=(0, 0, 0, 4))
+        self._lbl(pnl, "Template de Vista para os Callouts:", 11, bold=True, mg=(0, 0, 0, 4))
         self.combo_template = ComboBox()
         self.combo_template.FontSize = 11
         self.combo_template.Margin   = Thickness(0, 0, 0, 12)
@@ -337,69 +323,53 @@ class IsometricConfigWindow(Window):
         self.combo_template.SelectedIndex = 0
         pnl.Children.Add(self.combo_template)
 
-        self._lbl(pnl, "Tipo de Vista 3D:", 11, bold=True, mg=(0, 0, 0, 4))
-        self.combo_view_type = ComboBox()
-        self.combo_view_type.FontSize = 11
-        self.combo_view_type.Margin   = Thickness(0, 0, 0, 16)
-        for nome in self._view_type_names:
+        self._lbl(pnl, "Tipo de Callout:", 11, bold=True, mg=(0, 0, 0, 4))
+        self.combo_callout = ComboBox()
+        self.combo_callout.FontSize = 11
+        self.combo_callout.Margin   = Thickness(0, 0, 0, 16)
+        is_floor_plan = doc.ActiveView.ViewType in [ViewType.FloorPlan, ViewType.EngineeringPlan, ViewType.AreaPlan]
+        best_idx = 0
+        for i, nome in enumerate(self._callout_type_names):
             item = ComboBoxItem(); item.Content = nome
-            self.combo_view_type.Items.Add(item)
-        self.combo_view_type.SelectedIndex = 0
-        pnl.Children.Add(self.combo_view_type)
+            self.combo_callout.Items.Add(item)
+            if is_floor_plan and "[Planta de Piso]" in nome:
+                best_idx = i
+            elif not is_floor_plan and "[Vista de Detalhe]" in nome and best_idx == 0:
+                best_idx = i
+        self.combo_callout.SelectedIndex = best_idx
+        pnl.Children.Add(self.combo_callout)
 
         pnl.Children.Add(self._sep(10))
 
-        self._lbl(pnl, "Escala (ex: 25 = 1:25):", 11, bold=True, mg=(0, 0, 0, 4))
-        self.txt_escala = TextBox()
-        self.txt_escala.FontSize = 12
-        self.txt_escala.Padding  = Thickness(6, 4, 6, 4)
-        self.txt_escala.Margin   = Thickness(0, 0, 0, 12)
-        self.txt_escala.Text     = "25"
-        pnl.Children.Add(self.txt_escala)
-
-        self.chk_sem_escala = CheckBox()
-        self.chk_sem_escala.Content   = "Sem Escala (ignora o campo acima)"
-        self.chk_sem_escala.FontSize  = 11
-        self.chk_sem_escala.Margin    = Thickness(0, 0, 0, 12)
-        self.chk_sem_escala.IsChecked = True
-        pnl.Children.Add(self.chk_sem_escala)
-
-        scroll.Content = pnl
-        tab.Content    = scroll
-        self.tabs.Items.Add(tab)
-
-    def _build_tab_prancha(self):
-        tab = TabItem()
-        tab.Header = "Prancha"
-        scroll = ScrollViewer()
-        scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto
-        pnl = StackPanel()
-        pnl.Margin = Thickness(12)
-
-        self._lbl(pnl, "Tipo de Folha (Carimbo):", 11, bold=True, mg=(0, 0, 0, 4))
-        self.combo_titleblock = ComboBox()
-        self.combo_titleblock.FontSize = 11
-        self.combo_titleblock.Margin   = Thickness(0, 0, 0, 16)
-        for lbl in self._tb_labels:
-            item = ComboBoxItem(); item.Content = lbl
-            self.combo_titleblock.Items.Add(item)
-        self.combo_titleblock.SelectedIndex = 0
-        pnl.Children.Add(self.combo_titleblock)
-
-        pnl.Children.Add(self._sep(8))
-
-        self._lbl(pnl, "Tipo de Viewport:", 11, bold=True, mg=(0, 0, 0, 4))
-        self.combo_vp_type = ComboBox()
-        self.combo_vp_type.FontSize = 11
-        self.combo_vp_type.Margin   = Thickness(0, 0, 0, 16)
+        self._lbl(pnl, "Tipo de Titulo da Vista (Viewport):", 11, bold=True, mg=(0, 0, 0, 4))
+        self.combo_viewport = ComboBox()
+        self.combo_viewport.FontSize = 11
+        self.combo_viewport.Margin   = Thickness(0, 0, 0, 16)
         for lbl in self._vp_type_labels:
             item = ComboBoxItem(); item.Content = lbl
-            self.combo_vp_type.Items.Add(item)
-        self.combo_vp_type.SelectedIndex = self._vp_type_best
-        pnl.Children.Add(self.combo_vp_type)
+            self.combo_viewport.Items.Add(item)
+        self.combo_viewport.SelectedIndex = self._vp_type_best
+        pnl.Children.Add(self.combo_viewport)
+
+        pnl.Children.Add(self._sep(10))
+
+        self._lbl(pnl, "Tipo de Folha (Carimbo):", 11, bold=True, mg=(0, 0, 0, 4))
+        self.combo_folha = ComboBox()
+        self.combo_folha.FontSize = 11
+        self.combo_folha.Margin   = Thickness(0, 0, 0, 4)
+        best_folha_idx = 0
+        for i, lbl in enumerate(self._tb_labels):
+            item = ComboBoxItem(); item.Content = lbl
+            self.combo_folha.Items.Add(item)
+            if FAMILIA_NOME in lbl and best_folha_idx == 0:
+                best_folha_idx = i
+        self.combo_folha.SelectedIndex = best_folha_idx
+        pnl.Children.Add(self.combo_folha)
+        self._lbl(pnl, "A margem do carimbo sera lida automaticamente da prancha criada.",
+                  9, cor=self.COR_CINZA, mg=(0, 0, 0, 16))
 
         scroll.Content = pnl
-        tab.Content    = scroll
+        tab.Content = scroll
         self.tabs.Items.Add(tab)
 
     def _build_tab_carimbo(self):
@@ -410,9 +380,8 @@ class IsometricConfigWindow(Window):
         outer = StackPanel()
         outer.Margin = Thickness(12)
 
-        self._lbl(outer, "Parametros do carimbo", 12, bold=True, mg=(0, 0, 0, 4))
-        self._lbl(outer, "Aplicados em TODAS as pranchas criadas.", 10,
-                  cor=self.COR_CINZA, mg=(0, 0, 0, 10))
+        self._lbl(outer, "Parametros do carimbo", 12, bold=True, mg=(0,0,0,4))
+        self._lbl(outer, "Estes valores serao aplicados em TODAS as pranchas criadas.", 10, cor=self.COR_CINZA, mg=(0,0,0,10))
         outer.Children.Add(self._sep(8))
 
         for param_name, label_text in PARAMS_CARIMBO:
@@ -420,21 +389,185 @@ class IsometricConfigWindow(Window):
             g.Margin = Thickness(0, 0, 0, 6)
             g.ColumnDefinitions.Add(self._col(GridLength(150)))
             g.ColumnDefinitions.Add(self._col(GridLength(1, GridUnitType.Star)))
-
             lbl = self._lbl(None, label_text, 11, mg=(0, 4, 8, 0))
-            Grid.SetColumn(lbl, 0); g.Children.Add(lbl)
-
+            Grid.SetColumn(lbl, 0)
+            g.Children.Add(lbl)
             txt = TextBox()
             txt.FontSize = 11
-            txt.Padding  = Thickness(6, 4, 6, 4)
-            Grid.SetColumn(txt, 1); g.Children.Add(txt)
-
+            txt.Padding = Thickness(6, 4, 6, 4)
+            Grid.SetColumn(txt, 1)
+            g.Children.Add(txt)
             outer.Children.Add(g)
             self.campos_carimbo[label_text] = txt
 
         scroll.Content = outer
-        tab.Content    = scroll
+        tab.Content = scroll
         self.tabs.Items.Add(tab)
+
+    def _build_tab_legenda(self):
+        tab = TabItem()
+        tab.Header = "Legendas"
+
+        scroll = ScrollViewer()
+        scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+
+        pnl = StackPanel()
+        pnl.Margin = Thickness(12)
+
+        self._lbl(pnl, "Legendas nas Pranchas", 12, bold=True, mg=(0, 0, 0, 4))
+        self._lbl(pnl, "Selecione e ordene as legendas. A primeira da lista fica mais proximo do carimbo,\na segunda acima dela, e assim por diante.",
+                  10, cor=self.COR_CINZA, mg=(0, 0, 0, 10))
+        pnl.Children.Add(self._sep(8))
+
+        # ComboBox de seleção + botão Adicionar
+        self._lbl(pnl, "Vista de Legenda disponivel:", 11, bold=True, mg=(0, 0, 0, 4))
+        g_add = Grid()
+        g_add.Margin = Thickness(0, 0, 0, 10)
+        g_add.ColumnDefinitions.Add(self._col(GridLength(1, GridUnitType.Star)))
+        g_add.ColumnDefinitions.Add(self._col(GridLength.Auto))
+
+        self.combo_leg_disp = ComboBox()
+        self.combo_leg_disp.FontSize = 11
+        for nome in sorted(self.legends_dict.keys()):
+            item = ComboBoxItem(); item.Content = nome
+            self.combo_leg_disp.Items.Add(item)
+        if self.combo_leg_disp.Items.Count > 0:
+            self.combo_leg_disp.SelectedIndex = 0
+        Grid.SetColumn(self.combo_leg_disp, 0)
+        g_add.Children.Add(self.combo_leg_disp)
+
+        btn_add = Button()
+        btn_add.Content    = "Adicionar +"
+        btn_add.FontSize   = 11
+        btn_add.Padding    = Thickness(10, 4, 10, 4)
+        btn_add.Margin     = Thickness(6, 0, 0, 0)
+        btn_add.Background = SolidColorBrush(self.COR_AZUL)
+        btn_add.Foreground = SolidColorBrush(self.COR_BRANCO)
+        btn_add.Click     += self.on_add_legenda
+        Grid.SetColumn(btn_add, 1)
+        g_add.Children.Add(btn_add)
+
+        pnl.Children.Add(g_add)
+
+        # Lista ordenada
+        self._lbl(pnl, "Ordem de posicionamento (1ª = mais próxima do carimbo):", 11, bold=True, mg=(0, 0, 0, 6))
+        self.painel_legendas = StackPanel()
+        self.painel_legendas.Margin = Thickness(0, 0, 0, 16)
+        pnl.Children.Add(self.painel_legendas)
+
+        self._lbl(pnl, "Margem entre Legendas e Carimbo (mm):", 11, bold=True, mg=(0, 0, 0, 4))
+        self.txt_margem_legenda = TextBox()
+        self.txt_margem_legenda.FontSize = 11
+        self.txt_margem_legenda.Padding  = Thickness(6, 4, 6, 4)
+        self.txt_margem_legenda.Margin   = Thickness(0, 0, 0, 4)
+        self.txt_margem_legenda.Text     = "5"
+        pnl.Children.Add(self.txt_margem_legenda)
+
+        scroll.Content = pnl
+        tab.Content = scroll
+        self.tabs.Items.Add(tab)
+
+    def _rebuild_painel_legendas(self):
+        """Reconstrói o painel de legendas ordenadas com botões ↑ ↓ e X."""
+        self.painel_legendas.Children.Clear()
+
+        if not self._legendas_ordenadas:
+            lbl = Label()
+            lbl.Content  = "(nenhuma legenda adicionada)"
+            lbl.FontSize = 10
+            lbl.Foreground = SolidColorBrush(self.COR_CINZA)
+            self.painel_legendas.Children.Add(lbl)
+            return
+
+        for idx, nome in enumerate(self._legendas_ordenadas):
+            g = Grid()
+            g.Margin = Thickness(0, 0, 0, 4)
+            g.ColumnDefinitions.Add(self._col(GridLength.Auto))       # número
+            g.ColumnDefinitions.Add(self._col(GridLength(1, GridUnitType.Star)))  # nome
+            g.ColumnDefinitions.Add(self._col(GridLength.Auto))       # ↑
+            g.ColumnDefinitions.Add(self._col(GridLength.Auto))       # ↓
+            g.ColumnDefinitions.Add(self._col(GridLength.Auto))       # X
+
+            lbl_idx = Label()
+            lbl_idx.Content  = "{}º".format(idx + 1)
+            lbl_idx.FontSize = 11
+            lbl_idx.FontWeight = FontWeights.Bold
+            lbl_idx.Foreground = SolidColorBrush(self.COR_AZUL)
+            lbl_idx.Margin = Thickness(0, 0, 6, 0)
+            Grid.SetColumn(lbl_idx, 0)
+            g.Children.Add(lbl_idx)
+
+            lbl_nome = Label()
+            lbl_nome.Content  = nome
+            lbl_nome.FontSize = 11
+            Grid.SetColumn(lbl_nome, 1)
+            g.Children.Add(lbl_nome)
+
+            def _make_up(i):
+                def handler(s, a):
+                    if i > 0:
+                        self._legendas_ordenadas[i], self._legendas_ordenadas[i-1] = \
+                            self._legendas_ordenadas[i-1], self._legendas_ordenadas[i]
+                        self._rebuild_painel_legendas()
+                return handler
+
+            def _make_down(i):
+                def handler(s, a):
+                    if i < len(self._legendas_ordenadas) - 1:
+                        self._legendas_ordenadas[i], self._legendas_ordenadas[i+1] = \
+                            self._legendas_ordenadas[i+1], self._legendas_ordenadas[i]
+                        self._rebuild_painel_legendas()
+                return handler
+
+            def _make_rem(i):
+                def handler(s, a):
+                    self._legendas_ordenadas.pop(i)
+                    self._rebuild_painel_legendas()
+                return handler
+
+            btn_up = Button()
+            btn_up.Content  = "↑"
+            btn_up.FontSize = 11
+            btn_up.Padding  = Thickness(6, 2, 6, 2)
+            btn_up.Margin   = Thickness(4, 0, 2, 0)
+            btn_up.IsEnabled = idx > 0
+            btn_up.Click += _make_up(idx)
+            Grid.SetColumn(btn_up, 2)
+            g.Children.Add(btn_up)
+
+            btn_down = Button()
+            btn_down.Content  = "↓"
+            btn_down.FontSize = 11
+            btn_down.Padding  = Thickness(6, 2, 6, 2)
+            btn_down.Margin   = Thickness(2, 0, 2, 0)
+            btn_down.IsEnabled = idx < len(self._legendas_ordenadas) - 1
+            btn_down.Click += _make_down(idx)
+            Grid.SetColumn(btn_down, 3)
+            g.Children.Add(btn_down)
+
+            btn_rem = Button()
+            btn_rem.Content    = "X"
+            btn_rem.FontSize   = 11
+            btn_rem.Padding    = Thickness(6, 2, 6, 2)
+            btn_rem.Margin     = Thickness(2, 0, 0, 0)
+            btn_rem.Background = SolidColorBrush(self.COR_VERM)
+            btn_rem.Foreground = SolidColorBrush(self.COR_BRANCO)
+            btn_rem.Click += _make_rem(idx)
+            Grid.SetColumn(btn_rem, 4)
+            g.Children.Add(btn_rem)
+
+            self.painel_legendas.Children.Add(g)
+
+    def on_add_legenda(self, sender, args):
+        item = self.combo_leg_disp.SelectedItem
+        if item is None:
+            return
+        nome = item.Content
+        if nome in self._legendas_ordenadas:
+            forms.alert("'{}' ja esta na lista.".format(nome))
+            return
+        self._legendas_ordenadas.append(nome)
+        self._rebuild_painel_legendas()
 
     def on_ok(self, sender, args):
         prefixo       = self.txt_prefixo.Text.strip()
@@ -448,380 +581,267 @@ class IsometricConfigWindow(Window):
 
         zeros = self.combo_zeros.SelectedIndex + 1
 
-        t_idx       = self.combo_template.SelectedIndex
-        template_id = (self.templates_dict[self._template_names[t_idx]]
-                       if 0 <= t_idx < len(self._template_names)
-                       else ElementId.InvalidElementId)
+        t_idx = self.combo_template.SelectedIndex
+        template_id = (
+            self.templates_dict[self._template_names[t_idx]]
+            if 0 <= t_idx < len(self._template_names)
+            else ElementId.InvalidElementId
+        )
 
-        vt_idx       = self.combo_view_type.SelectedIndex
-        view_type_id = (self.view_types_dict[self._view_type_names[vt_idx]].Id
-                        if 0 <= vt_idx < len(self._view_type_names)
-                        else ElementId.InvalidElementId)
+        c_idx = self.combo_callout.SelectedIndex
+        callout_type_id = (
+            self.callout_types_dict[self._callout_type_names[c_idx]]
+            if 0 <= c_idx < len(self._callout_type_names)
+            else None
+        )
 
-        try:
-            escala = int(self.txt_escala.Text.strip())
-        except:
-            escala = 25
+        vp_idx = self.combo_viewport.SelectedIndex
+        if 0 <= vp_idx < len(self._vp_type_labels):
+            viewport_type_id = self.viewport_types_dict[self._vp_type_labels[vp_idx]]
+        else:
+            viewport_type_id = ElementId.InvalidElementId
 
-        sem_escala = bool(self.chk_sem_escala.IsChecked)
-
-        tb_idx    = self.combo_titleblock.SelectedIndex
-        tb_lbl    = self._tb_labels[tb_idx] if 0 <= tb_idx < len(self._tb_labels) else None
-        tb_symbol = self._tb_symbols.get(tb_lbl) if tb_lbl else None
-
-        vp_idx         = self.combo_vp_type.SelectedIndex
-        vp_lbl         = self._vp_type_labels[vp_idx] if 0 <= vp_idx < len(self._vp_type_labels) else None
-        vp_type_id_sel = self.viewport_types_dict.get(vp_lbl, ElementId.InvalidElementId) if vp_lbl else ElementId.InvalidElementId
+        f_idx = self.combo_folha.SelectedIndex
+        if 0 <= f_idx < len(self._tb_labels):
+            folha_symbol = self._tb_symbols[self._tb_labels[f_idx]]
+        else:
+            folha_symbol = None
 
         dados_carimbo = {}
-        for label_text, txt in self.campos_carimbo.items():
+        for param_name, txt in self.campos_carimbo.items():
             valor = txt.Text.strip()
             if valor:
-                dados_carimbo[label_text] = valor
+                dados_carimbo[param_name] = valor
+
+        # Resolve lista ordenada de objetos View
+        legendas_views = []
+        for nome in self._legendas_ordenadas:
+            v = self.legends_dict.get(nome)
+            if v is not None:
+                legendas_views.append(v)
+
+        try:
+            margem_legenda = float(self.txt_margem_legenda.Text.strip())
+        except:
+            margem_legenda = 5.0
 
         self.resultado = {
-            "prefixo":       prefixo,
-            "identificador": identificador,
-            "num_inicial":   num_inicial,
-            "zeros":         zeros,
-            "sufixo":        sufixo,
-            "template_id":   template_id,
-            "view_type_id":  view_type_id,
-            "escala":        escala,
-            "sem_escala":    sem_escala,
-            "tb_symbol":     tb_symbol,
-            "vp_type_id":    vp_type_id_sel,
-            "dados_carimbo": dados_carimbo,
+            "prefixo":          prefixo,
+            "identificador":    identificador,
+            "num_inicial":      num_inicial,
+            "zeros":            zeros,
+            "folha_symbol":     folha_symbol,
+            "viewport_type_id": viewport_type_id,
+            "sufixo":           sufixo,
+            "template_id":      template_id,
+            "callout_type_id":  callout_type_id,
+            "dados_carimbo":    dados_carimbo,
+            "legendas_views":   legendas_views,
+            "margem_legenda":   margem_legenda,
         }
         self.Close()
 
 
-# ---------------------------------------------------------------------------
-# FLUXO PRINCIPAL
-# ---------------------------------------------------------------------------
-def executar_fluxo_isometrico():
-    import math as _math
+def executar_fluxo_callout():
+    import time
+    inicio = time.time()
 
-    titleblock_symbols = get_titleblock_symbols_by_family()
-    if not titleblock_symbols:
+    active_view = doc.ActiveView
+    _tipos_invalidos = {
+        ViewType.DrawingSheet, ViewType.ProjectBrowser,
+        ViewType.SystemBrowser, ViewType.Undefined,
+        ViewType.Schedule, ViewType.Legend,
+    }
+    if active_view.ViewType in _tipos_invalidos:
         forms.alert(
-            "Nenhum carimbo encontrado.\nCarregue a familia '%s' e tente novamente." % FAMILIA_NOME,
+            "Vista atual nao suporta Callouts.\nTipo detectado: {}\n\nAbra uma planta, corte, elevacao ou detalhe.".format(
+                active_view.ViewType.ToString()
+            ),
             exitscript=True
         )
 
+    titleblock_symbols = get_titleblock_symbols_by_family()
+    if not titleblock_symbols:
+        forms.alert("Nenhum carimbo encontrado no projeto.", exitscript=True)
+
     templates = {"(Nenhum)": ElementId.InvalidElementId}
     for v in FilteredElementCollector(doc).OfClass(DB.View):
-        if v.IsTemplate and v.ViewType == ViewType.ThreeD:
+        if v.IsTemplate:
             templates[v.Name] = v.Id
-    if len(templates) == 1:
-        for v in FilteredElementCollector(doc).OfClass(DB.View):
-            if v.IsTemplate:
-                templates[v.Name] = v.Id
 
-    view_types_3d = get_3d_view_family_types()
-    if not view_types_3d:
-        forms.alert("Nenhum tipo de vista 3D encontrado no projeto.", exitscript=True)
+    callout_types = get_callout_types()
+    if not callout_types:
+        forms.alert("Nenhum tipo de Callout (FloorPlan ou Detail) encontrado no projeto.", exitscript=True)
 
-    viewport_types_dict = get_viewport_types()
+    viewport_types = get_viewport_types()
+    legends        = get_legend_views()
 
-    dlg = IsometricConfigWindow(templates, view_types_3d, titleblock_symbols, viewport_types_dict)
+    dlg = CalloutConfigWindow(templates, callout_types, titleblock_symbols, viewport_types, legends)
     dlg.ShowDialog()
 
     if not dlg.resultado:
         script.exit()
 
-    prefixo       = dlg.resultado["prefixo"]
-    identificador = dlg.resultado["identificador"]
-    num_inicial   = dlg.resultado["num_inicial"]
-    zeros         = dlg.resultado["zeros"]
-    sufixo        = dlg.resultado["sufixo"]
-    template_id   = dlg.resultado["template_id"]
-    view_type_id  = dlg.resultado["view_type_id"]
-    escala        = dlg.resultado["escala"]
-    sem_escala    = dlg.resultado["sem_escala"]
-    tb_symbol     = dlg.resultado["tb_symbol"]
-    vp_type_id    = dlg.resultado["vp_type_id"]
-    dados_carimbo = dlg.resultado["dados_carimbo"]
+    prefixo          = dlg.resultado["prefixo"]
+    identificador    = dlg.resultado["identificador"]
+    num_inicial      = dlg.resultado["num_inicial"]
+    zeros            = dlg.resultado["zeros"]
+    sufixo           = dlg.resultado["sufixo"]
+    template_id      = dlg.resultado["template_id"]
+    callout_type_id  = dlg.resultado["callout_type_id"]
+    dados_carimbo    = dlg.resultado["dados_carimbo"]
+    folha_symbol     = dlg.resultado.get("folha_symbol", None)
+    viewport_type_id = dlg.resultado.get("viewport_type_id", ElementId.InvalidElementId)
+    legendas_views   = dlg.resultado.get("legendas_views", [])
+    margem_legenda   = dlg.resultado.get("margem_legenda", 5.0)
 
-    if not tb_symbol:
+    if folha_symbol is None:
         forms.alert("Nenhum tipo de folha selecionado.", exitscript=True)
-    tb_type_id = tb_symbol.Id
 
-    vista_ativa  = doc.ActiveView
-    nivel_atual  = vista_ativa.GenLevel
+    tb_type_id    = folha_symbol.Id
+    vistas_geradas = []
+    erros_callout  = []
 
-    drafting_vft_id = ElementId.InvalidElementId
-    for vft in FilteredElementCollector(doc).OfClass(ViewFamilyType):
-        if vft.ViewFamily == ViewFamily.Drafting:
-            drafting_vft_id = vft.Id
-            break
+    contador = num_inicial
 
-    # -----------------------------------------------------------------------
-    # CONSTANTES DE LAYOUT (definidas aqui pois sao usadas em nova_prancha
-    # e em todo o loop de paginacao)
-    # -----------------------------------------------------------------------
-    mm                  = 1.0 / 304.8
-    margem_esq          = 10.0 * mm
-    margem_sup          = 10.0 * mm
-    margem_inf          = 10.0 * mm
-    MARGEM_CORTE        = 1.0  * mm
-    espacamento         = 2.0  * mm
-    MARGEM_ENTRE_LINHAS = 5.0  * mm
-    LABEL_H_MIN         = 8.0  * mm
-    GAP_LABEL           = 1.5  * mm
-
-    # -----------------------------------------------------------------------
-    # HELPERS de transacao atomica
-    # -----------------------------------------------------------------------
-    def _exec_transaction(nome, func):
-        """Executa func() dentro de uma transacao propria. Retorna o resultado."""
-        with Transaction(doc, nome) as t:
-            t.Start()
-            try:
-                resultado = func()
-                t.Commit()
-                return resultado
-            except Exception as e:
-                t.RollBack()
-                raise e
-
-
-
-    def detectar_max_por_prancha(bb):
-        w_mm = (bb.Max.X - bb.Min.X) * 304.8
-        h_mm = (bb.Max.Y - bb.Min.Y) * 304.8
-        paisagem = w_mm > h_mm
-        area = w_mm * h_mm
-        if area > 900000:
-            return 9 if paisagem else 9
-        elif area > 450000:
-            return 6 if paisagem else 6
-        else:
-            return 3
-
-
-    def nova_prancha():
-        """Cria uma nova folha e retorna (sheet, ux_min, ux_max, uy_min, uy_max).
-        DEVE ser chamada dentro de uma transacao ativa."""
-        sh = ViewSheet.Create(doc, tb_type_id)
-
-    
-        doc.Regenerate()
-
-        tbs = (FilteredElementCollector(doc, sh.Id)
-               .OfCategory(BuiltInCategory.OST_TitleBlocks)
-               .WhereElementIsNotElementType().ToElements())
-        tb_instance = tbs[0] if tbs else None
-
-        if not tb_instance:
-            raise Exception("Prancha sem carimbo.")
-
-        for param_name, valor in dados_carimbo.items():
-            p = sh.LookupParameter(param_name)
-            if not p:
-                p = tb_instance.LookupParameter(param_name)
-            if not p:
-                p = doc.ProjectInformation.LookupParameter(param_name)
-            if p and not p.IsReadOnly:
-                if p.StorageType == StorageType.String:
-                    p.Set(str(valor))
-                elif p.StorageType == StorageType.Integer:
-                    try: p.Set(int(valor))
-                    except: pass
-                elif p.StorageType == StorageType.Double:
-                    try: p.Set(float(valor))
-                    except: pass
-
-        bb_sh = tb_instance.get_BoundingBox(sh)
-        if not bb_sh:
-            raise Exception("BoundingBox None.")
-
-        doc.Regenerate()
-
-        ux_max_calc = bb_sh.Max.X - (175.0 * mm)
-        try:
-            vps_carimbo = (FilteredElementCollector(doc, sh.Id)
-                           .OfClass(Viewport).ToElements())
-            if vps_carimbo:
-                outlines = []
-                for vp in vps_carimbo:
-                    try:
-                        ol = vp.GetBoxOutline()
-                        outlines.append(ol)
-                    except:
-                        pass
-                if outlines:
-                    outlines.sort(key=lambda o: o.MinimumPoint.X, reverse=True)
-                    ux_max_calc = outlines[0].MinimumPoint.X - (5.0 * mm)
-        except:
-            pass
-
-        return (
-            sh,
-            bb_sh.Min.X + MARGEM_CORTE + margem_esq,
-            ux_max_calc,
-            bb_sh.Min.Y + MARGEM_CORTE + margem_inf,
-            bb_sh.Max.Y - MARGEM_CORTE - margem_sup,
-            detectar_max_por_prancha(bb_sh),
-        )
-
-    # -----------------------------------------------------------------------
-    # FASE 1 — SELECAO INTERATIVA DE AREAS
-    # -----------------------------------------------------------------------
-    grupos              = []
+    caixas_desenhadas   = []
     marcacoes_por_caixa = []
-    contador            = _proximo_contador(prefixo, identificador, num_inicial, sufixo)
-    contador_inicial    = contador
 
-    def _limpar_marcacoes(grupos_marc=None):
-        from System.Collections.Generic import List
-        ids_a_deletar = List[DB.ElementId]()
-        if grupos_marc is None:
+    def _limpar_marcacoes(grupos=None):
+        ids_a_deletar = []
+        if grupos is None:
             for g in marcacoes_por_caixa:
-                for eid in g:
-                    if doc.GetElement(eid) is not None:
-                        ids_a_deletar.Add(eid)
+                ids_a_deletar.extend(g)
             marcacoes_por_caixa[:] = []
         else:
-            for g in grupos_marc:
-                for eid in g:
-                    if doc.GetElement(eid) is not None:
-                        ids_a_deletar.Add(eid)
-        if ids_a_deletar.Count == 0:
+            for g in grupos:
+                ids_a_deletar.extend(g)
+        if not ids_a_deletar:
             return
         try:
             with Transaction(doc, "Limpar Marcacoes Temporarias") as t_limpa:
                 t_limpa.Start()
-                doc.Delete(ids_a_deletar)
+                for eid in ids_a_deletar:
+                    try:
+                        elem = doc.GetElement(eid)
+                        if elem is not None:
+                            doc.Delete(eid)
+                    except:
+                        pass
                 t_limpa.Commit()
-        except Exception:
+        except:
             pass
 
-    try:
-        while True:
-            numero_str    = str(contador).zfill(zeros)
-            contador_full = "%s%s" % (identificador, numero_str)
-            partes        = [prefixo, contador_full, sufixo]
-            nome_preview  = " ".join([p for p in partes if p])
+    while True:
+        formato_num   = "{:0" + str(zeros) + "d}"
+        numero_str    = formato_num.format(contador)
+        contador_full = "{}{}".format(identificador, numero_str)
+        partes_prev   = [prefixo, contador_full, sufixo]
+        nome_preview  = " ".join([p for p in partes_prev if p])
 
-            instrucao = "[%s]  (%d ja marcado(s))  - Desenhe o retangulo ou ESC para opcoes" % (
-                nome_preview, len(grupos)
+        try:
+            box = uidoc.Selection.PickBox(
+                PickBoxStyle.Directional,
+                "[{}]  ({} ja marcado(s))  —  Desenhe o retangulo ou ESC para opcoes".format(
+                    nome_preview, len(caixas_desenhadas)
+                )
             )
+            caixas_desenhadas.append(box)
 
+            ids_marcacao = []
             try:
-                box = uidoc.Selection.PickBox(PickBoxStyle.Directional, instrucao)
-                grupos.append(box)
+                with Transaction(doc, "Marcacao: {}".format(nome_preview)) as t_marc:
+                    t_marc.Start()
+                    min_x = min(box.Min.X, box.Max.X)
+                    max_x = max(box.Min.X, box.Max.X)
+                    min_y = min(box.Min.Y, box.Max.Y)
+                    max_y = max(box.Min.Y, box.Max.Y)
+                    segmentos = [
+                        (XYZ(min_x, min_y, 0), XYZ(max_x, min_y, 0)),
+                        (XYZ(max_x, min_y, 0), XYZ(max_x, max_y, 0)),
+                        (XYZ(max_x, max_y, 0), XYZ(min_x, max_y, 0)),
+                        (XYZ(min_x, max_y, 0), XYZ(min_x, min_y, 0)),
+                    ]
+                    for p1, p2 in segmentos:
+                        dl = doc.Create.NewDetailCurve(active_view, Line.CreateBound(p1, p2))
+                        ids_marcacao.append(dl.Id)
+                    centro   = XYZ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0, 0)
+                    txt_type = DB.FilteredElementCollector(doc).OfClass(DB.TextNoteType).FirstElement()
+                    if txt_type is not None:
+                        opts = DB.TextNoteOptions(txt_type.Id)
+                        opts.HorizontalAlignment = DB.HorizontalTextAlignment.Center
+                        tnote = DB.TextNote.Create(doc, active_view.Id, centro, nome_preview, opts)
+                        ids_marcacao.append(tnote.Id)
+                    t_marc.Commit()
+            except Exception as e_marc:
+                erros_callout.append("Aviso: marcacao visual falhou para '{}': {}".format(nome_preview, str(e_marc)))
 
-                ids_marcacao = []
-                try:
-                    with Transaction(doc, "Marcacao: %s" % nome_preview) as t_marc:
-                        t_marc.Start()
-                        min_x = min(box.Min.X, box.Max.X)
-                        max_x = max(box.Min.X, box.Max.X)
-                        min_y = min(box.Min.Y, box.Max.Y)
-                        max_y = max(box.Min.Y, box.Max.Y)
-                        for p1, p2 in [
-                            (XYZ(min_x, min_y, 0), XYZ(max_x, min_y, 0)),
-                            (XYZ(max_x, min_y, 0), XYZ(max_x, max_y, 0)),
-                            (XYZ(max_x, max_y, 0), XYZ(min_x, max_y, 0)),
-                            (XYZ(min_x, max_y, 0), XYZ(min_x, min_y, 0)),
-                        ]:
-                            dl = doc.Create.NewDetailCurve(vista_ativa, Line.CreateBound(p1, p2))
-                            ids_marcacao.append(dl.Id)
-                        centro = XYZ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0, 0)
-                        txt_type = (DB.FilteredElementCollector(doc)
-                                    .OfClass(DB.TextNoteType).FirstElement())
-                        if txt_type is not None:
-                            opts = DB.TextNoteOptions(txt_type.Id)
-                            opts.HorizontalAlignment = DB.HorizontalTextAlignment.Center
-                            tnote = DB.TextNote.Create(
-                                doc, vista_ativa.Id, centro, nome_preview, opts)
-                            ids_marcacao.append(tnote.Id)
-                        t_marc.Commit()
-                except Exception:
-                    pass
+            marcacoes_por_caixa.append(ids_marcacao)
+            contador += 1
 
-                marcacoes_por_caixa.append(ids_marcacao)
-                contador += 1
-
-            except Exceptions.OperationCanceledException:
-                if grupos:
-                    opcao = forms.alert(
-                        "Selecao pausada. %d isometrico(s) na fila.\nO que deseja fazer?" % len(grupos),
-                        options=["Finalizar e Criar Pranchas", "Desfazer o ULTIMO e Continuar", "Cancelar Script"]
-                    )
-                    if opcao == "Desfazer o ULTIMO e Continuar":
-                        grupos.pop()
-                        contador -= 1
-                        if marcacoes_por_caixa:
-                            _limpar_marcacoes(grupos_marc=[marcacoes_por_caixa.pop()])
-                        continue
-                    elif opcao == "Finalizar e Criar Pranchas":
-                        _limpar_marcacoes()
-                        break
-                    else:
-                        _limpar_marcacoes()
-                        script.exit()
+        except Exceptions.OperationCanceledException:
+            if len(caixas_desenhadas) > 0:
+                opcao = forms.alert(
+                    "Selecao pausada. Voce possui {} detalhe(s) na fila.\nO que deseja fazer?".format(len(caixas_desenhadas)),
+                    options=["Finalizar e Criar Pranchas", "Desfazer o ULTIMO e Continuar", "Cancelar Script"]
+                )
+                if opcao == "Desfazer o ULTIMO e Continuar":
+                    caixas_desenhadas.pop()
+                    contador -= 1
+                    if marcacoes_por_caixa:
+                        _limpar_marcacoes(grupos=[marcacoes_por_caixa.pop()])
+                    continue
+                elif opcao == "Finalizar e Criar Pranchas":
+                    _limpar_marcacoes()
+                    break
                 else:
+                    _limpar_marcacoes()
                     script.exit()
-            except Exception as e:
-                _limpar_marcacoes()
-                forms.alert("Erro na selecao: %s" % str(e))
-                break
-    finally:
-        _limpar_marcacoes()
+            else:
+                script.exit()
+        except Exception as e:
+            _limpar_marcacoes()
+            erros_callout.append("Erro ao desenhar caixa {}: {}".format(contador, str(e)))
+            break
 
-    if not grupos:
-        forms.alert("Nenhum isometrico selecionado. Operacao cancelada.")
+    if not caixas_desenhadas:
+        _limpar_marcacoes()
+        forms.alert("Nenhum detalhe desenhado. Operacao cancelada.")
         script.exit()
 
-    # -----------------------------------------------------------------------
-    # FASE 2 — CRIACAO DAS VISTAS 3D (cada uma em transacao propria,
-    #           todas dentro do TransactionGroup)
-    # -----------------------------------------------------------------------
-    vistas_geradas = []
-    erros          = []
-
-    with TransactionGroup(doc, "Gerador de Isometricos") as tg:
+    with TransactionGroup(doc, "Gerador de Pranchas via Detalhe") as tg:
         tg.Start()
 
-        # --- 2a. Cria as vistas isometricas ---
-        for idx, box in enumerate(grupos):
-            numero_str    = str(contador_inicial + idx).zfill(zeros)
-            contador_full = "%s%s" % (identificador, numero_str)
-            partes        = [prefixo, contador_full, sufixo]
-            nome_iso      = sanitize_name(" ".join([p for p in partes if p]))
+        for idx, box in enumerate(caixas_desenhadas):
+            numero_str    = formato_num.format(num_inicial + idx)
+            contador_full = "{}{}".format(identificador, numero_str)
+            partes_det    = [prefixo, contador_full, sufixo]
+            nome_detalhe  = sanitize_name(" ".join([p for p in partes_det if p]))
 
-            novo_id        = None
-            placeholder_id = None
+            novo_id    = None
+            escala_final = 25
+            real_crop_w  = 0.0
+            real_crop_h  = 0.0
+            tid_salvo    = ElementId.InvalidElementId
 
-            with Transaction(doc, "Criar Isometrico: %s" % nome_iso) as t:
+            with Transaction(doc, "Criar Detalhe: {}".format(nome_detalhe)) as t:
                 t.Start()
                 try:
-                    p_min_x = min(box.Min.X, box.Max.X)
-                    p_max_x = max(box.Min.X, box.Max.X)
-                    p_min_y = min(box.Min.Y, box.Max.Y)
-                    p_max_y = max(box.Min.Y, box.Max.Y)
+                    min_x  = min(box.Min.X, box.Max.X)
+                    max_x  = max(box.Min.X, box.Max.X)
+                    min_y  = min(box.Min.Y, box.Max.Y)
+                    max_y  = max(box.Min.Y, box.Max.Y)
+                    crop_w = max_x - min_x
+                    crop_h = max_y - min_y
 
-                    margem = 0.5 / 0.3048
+                    if crop_w < 0.01 or crop_h < 0.01:
+                        raise Exception("Retangulo muito pequeno.")
 
-                    if nivel_atual:
-                        z_level = nivel_atual.Elevation
-                        z_min   = z_level - margem
-                        z_max   = z_level + (2.30 / 0.3048)
-                    else:
-                        z_base = min(box.Min.Z, box.Max.Z)
-                        z_min  = z_base - margem
-                        z_max  = z_base + (2.30 / 0.3048)
-
-                    section_box     = DB.BoundingBoxXYZ()
-                    section_box.Min = XYZ(p_min_x - margem, p_min_y - margem, z_min)
-                    section_box.Max = XYZ(p_max_x + margem, p_max_y + margem, z_max)
-
-                    nova      = View3D.CreateIsometric(doc, view_type_id)
-                    nova.Name = get_unique_view_name(nome_iso)
-                    nova.IsSectionBoxActive = True
-                    nova.SetSectionBox(section_box)
+                    pt1  = XYZ(min_x, min_y, box.Min.Z)
+                    pt2  = XYZ(max_x, max_y, box.Max.Z)
+                    nova = DB.ViewSection.CreateCallout(doc, active_view.Id, callout_type_id, pt1, pt2)
+                    novo_id   = nova.Id
+                    nova.Name = get_unique_view_name(nome_detalhe)
 
                     if template_id != ElementId.InvalidElementId:
                         try:
@@ -830,428 +850,455 @@ def executar_fluxo_isometrico():
                         except:
                             pass
 
-                    if not sem_escala:
+                    tid_salvo = nova.ViewTemplateId
+                    if tid_salvo != ElementId.InvalidElementId:
+                        nova.ViewTemplateId = ElementId.InvalidElementId
+                        doc.Regenerate()
+
+                    nova.Scale = 25
+
+                    p_scope = nova.get_Parameter(BuiltInParameter.VIEWER_VOLUME_OF_INTEREST_CROP)
+                    if p_scope and not p_scope.IsReadOnly:
+                        p_scope.Set(ElementId.InvalidElementId)
+
+                    doc.Regenerate()
+                    nova.CropBoxActive  = True
+                    nova.CropBoxVisible = True
+
+                    bb    = nova.CropBox
+                    inv_t = bb.Transform.Inverse
+                    p1_local = inv_t.OfPoint(XYZ(min_x, min_y, 0))
+                    p2_local = inv_t.OfPoint(XYZ(max_x, max_y, 0))
+                    bb.Min = XYZ(min(p1_local.X, p2_local.X), min(p1_local.Y, p2_local.Y), bb.Min.Z)
+                    bb.Max = XYZ(max(p1_local.X, p2_local.X), max(p1_local.Y, p2_local.Y), bb.Max.Z)
+                    nova.CropBox = bb
+
+                    p_ann = nova.get_Parameter(BuiltInParameter.VIEWER_ANNOTATION_CROP_ACTIVE)
+                    if p_ann and not p_ann.IsReadOnly:
+                        p_ann.Set(1)
+
+                    doc.Regenerate()
+
+                    if tid_salvo != ElementId.InvalidElementId:
                         try:
-                            nova.Scale = escala
+                            tmpl_elem = doc.GetElement(tid_salvo)
+                            template_controla_crop = False
+                            if tmpl_elem:
+                                p_ctrl = tmpl_elem.get_Parameter(BuiltInParameter.VIEWER_CROP_REGION)
+                                if p_ctrl and not p_ctrl.IsReadOnly:
+                                    template_controla_crop = True
+                            if not template_controla_crop:
+                                nova.ViewTemplateId = tid_salvo
+                                doc.Regenerate()
                         except:
                             pass
 
-                    if (drafting_vft_id != ElementId.InvalidElementId
-                            and vista_ativa.ViewType in [
-                                ViewType.FloorPlan,
-                                ViewType.EngineeringPlan,
-                                ViewType.CeilingPlan]):
-                        try:
-                            placeholder    = criar_placeholder_drafting_view(nome_iso, drafting_vft_id)
-                            placeholder_id = placeholder.Id
-                            pt1 = XYZ(p_min_x, p_min_y, box.Min.Z)
-                            pt2 = XYZ(p_max_x, p_max_y, box.Min.Z)
-                            DB.ViewSection.CreateReferenceCallout(
-                                doc, vista_ativa.Id, placeholder.Id, pt1, pt2)
-                        except Exception as e_ref:
-                            erros.append("Aviso: Falha ao criar referencia para '%s': %s"
-                                         % (nome_iso, str(e_ref)))
+                    real_crop_w = crop_w
+                    real_crop_h = crop_h
+                    try:
+                        if nova.CropBoxActive:
+                            bb_chk = nova.CropBox
+                            if bb_chk:
+                                w_chk = abs(bb_chk.Max.X - bb_chk.Min.X)
+                                h_chk = abs(bb_chk.Max.Y - bb_chk.Min.Y)
+                                if w_chk > 0.001 and h_chk > 0.001:
+                                    real_crop_w = w_chk
+                                    real_crop_h = h_chk
+                    except:
+                        pass
 
-                    doc.Regenerate()
-                    novo_id = nova.Id
                     t.Commit()
-
                 except Exception as e:
-                    erros.append("Erro ao criar '%s': %s" % (nome_iso, str(e)))
+                    erros_callout.append("Erro ao criar '{}': {}".format(nome_detalhe, str(e)))
                     t.RollBack()
+                    novo_id = None
 
-            if novo_id is not None:
-                vistas_geradas.append({
-                    "id":             novo_id,
-                    "placeholder_id": placeholder_id,
-                    "numero_detalhe": contador_inicial + idx,
-                })
+            if novo_id is None:
+                continue
+
+            with Transaction(doc, "Corrigir Annotation Crop: {}".format(nome_detalhe)) as t2:
+                t2.Start()
+                try:
+                    nova_ref = doc.GetElement(novo_id)
+                    if nova_ref is not None:
+                        tid_atual = nova_ref.ViewTemplateId
+                        if tid_atual != ElementId.InvalidElementId:
+                            nova_ref.ViewTemplateId = ElementId.InvalidElementId
+                            doc.Regenerate()
+                        for nome_p in ["Annotation Crop Offset Left", "Annotation Crop Offset Right",
+                                       "Annotation Crop Offset Top", "Annotation Crop Offset Bottom"]:
+                            try:
+                                p = nova_ref.LookupParameter(nome_p)
+                                if p and not p.IsReadOnly:
+                                    p.Set(0.0)
+                            except:
+                                pass
+                        try:
+                            sm = nova_ref.GetCropRegionShapeManager()
+                            if sm is not None:
+                                sm.BottomAnnotationCropOffset = 0.0
+                                sm.TopAnnotationCropOffset    = 0.0
+                                sm.LeftAnnotationCropOffset   = 0.0
+                                sm.RightAnnotationCropOffset  = 0.0
+                        except:
+                            pass
+                        doc.Regenerate()
+                        if tid_atual != ElementId.InvalidElementId:
+                            nova_ref.ViewTemplateId = tid_atual
+                            doc.Regenerate()
+                    t2.Commit()
+                except Exception as e:
+                    erros_callout.append("Annotation crop offset erro ({}): {}".format(nome_detalhe, str(e)))
+                    t2.RollBack()
+
+            vistas_geradas.append({
+                "id":     novo_id,
+                "crop_w": real_crop_w,
+                "crop_h": real_crop_h,
+                "escala": escala_final,
+            })
 
         if not vistas_geradas:
             tg.RollBack()
-            forms.alert("Nenhuma vista criada.\n" + "\n".join(erros))
+            forms.alert("Nenhuma vista criada.\n" + "\n".join(erros_callout))
             script.exit()
 
-        # --- 2b. Cria a primeira prancha e adiciona todos os viewports ---
-        sheet_result = [None]  # usa lista para ser mutavel dentro de closures
-        sheet_bounds = [None]  # (ux_min, ux_max, uy_min, uy_max)
+        vp_type_id = viewport_type_id
 
-        def _criar_primeira_prancha():
-            resultado = nova_prancha()
-            sheet_result[0] = resultado[0]
-            sheet_bounds[0] = resultado[1:]
-            return resultado
-
-        with Transaction(doc, "Criar Primeira Prancha") as t:
+        with Transaction(doc, "Paginacao de Pranchas") as t:
             t.Start()
-            try:
-                sh, ux_min, ux_max, uy_min, uy_max, max_por_prancha = nova_prancha()
-                t.Commit()
-            except Exception as e:
-                t.RollBack()
-                tg.RollBack()
-                forms.alert("Erro ao criar prancha: %s" % str(e))
-                script.exit()
+            doc.Regenerate()
 
-        # --- 2c. Adiciona viewports na primeira prancha ---
-        vp_infos = []
+            mm                  = 1.0 / 304.8
+            margem_esq          = 25.0 * mm
+            margem_sup          = 15.0 * mm
+            margem_inf          = 15.0 * mm
+            MARGEM_CORTE        = 5.0  * mm
+            espacamento         = 10.0 * mm
+            MARGEM_ENTRE_LINHAS = 20.0 * mm
+            LABEL_H_MIN         = 15.0 * mm
 
-        with Transaction(doc, "Adicionar Viewports na Prancha") as t:
-            t.Start()
-            try:
+            def nova_prancha():
+                sh = ViewSheet.Create(doc, tb_type_id)
+                doc.Regenerate()
+                tbs_sh = (FilteredElementCollector(doc, sh.Id)
+                          .OfCategory(BuiltInCategory.OST_TitleBlocks)
+                          .WhereElementIsNotElementType().ToElements())
+                tb_instance = tbs_sh[0] if tbs_sh else None
+
+                for param_name, valor in dados_carimbo.items():
+                    p = sh.LookupParameter(param_name)
+                    if not p and tb_instance:
+                        p = tb_instance.LookupParameter(param_name)
+                    if not p:
+                        p = doc.ProjectInformation.LookupParameter(param_name)
+                    if p and not p.IsReadOnly:
+                        if p.StorageType == StorageType.String:
+                            p.Set(str(valor))
+                        elif p.StorageType == StorageType.Integer:
+                            try: p.Set(int(valor))
+                            except: pass
+                        elif p.StorageType == StorageType.Double:
+                            try: p.Set(float(valor))
+                            except: pass
+
+                if not tbs_sh:
+                    raise Exception("Prancha sem carimbo.")
+                bb_sh = tb_instance.get_BoundingBox(sh)
+                if not bb_sh:
+                    raise Exception("BoundingBox None.")
+
                 doc.Regenerate()
 
-                for info in vistas_geradas:
-                    v_3d = doc.GetElement(info["id"])
-                    if v_3d is None:
+                ux_max_calc = bb_sh.Max.X - (210.0 * mm)
+                try:
+                    vps_carimbo = FilteredElementCollector(doc, sh.Id).OfClass(Viewport).ToElements()
+                    if vps_carimbo:
+                        outlines = []
+                        for vp in vps_carimbo:
+                            try:
+                                ol = vp.GetBoxOutline()
+                                outlines.append(ol)
+                            except:
+                                pass
+                        if outlines:
+                            outlines.sort(key=lambda o: o.MinimumPoint.X, reverse=True)
+                            ux_max_calc = outlines[0].MinimumPoint.X - (5.0 * mm)
+                except:
+                    pass
+
+                return (
+                    sh,
+                    bb_sh.Min.X + MARGEM_CORTE + margem_esq,
+                    ux_max_calc,
+                    bb_sh.Min.Y + MARGEM_CORTE + margem_inf,
+                    bb_sh.Max.Y - MARGEM_CORTE - margem_sup,
+                    bb_sh,
+                )
+
+            sheet, ux_min, ux_max, uy_min, uy_max, bb_sh_primeira = nova_prancha()
+
+            # ----------------------------------------------------------------
+            # Insere legendas na prancha — idêntico ao script.py de pranchas,
+            # com re-medição do outline APÓS regenerate e SetBoxCenter.
+            # Ordem: 1ª legenda mais próxima do carimbo, empilhando pra cima.
+            # ----------------------------------------------------------------
+            def _inserir_legendas_na_prancha(sh, bb_sh):
+                if not legendas_views:
+                    return
+
+                doc.Regenerate()
+                margem_dir_mm  = 9.0
+                altura_selo_mm = 135.0
+                gap_mm         = 2.0
+
+                # Âncora X: borda direita do carimbo
+                target_x_max = bb_sh.Max.X - (margem_dir_mm / 304.8)
+                # Âncora Y: topo do selo + margem configurada pelo usuário
+                current_y = bb_sh.Min.Y + (altura_selo_mm / 304.8) + (margem_legenda * mm)
+
+                for leg_view in legendas_views:
+                    if leg_view is None:
                         continue
+                    try:
+                        if not Viewport.CanAddViewToSheet(doc, sh.Id, leg_view.Id):
+                            erros_callout.append("Legenda '{}' nao pode ser adicionada.".format(leg_view.Name))
+                            continue
 
-                    if not Viewport.CanAddViewToSheet(doc, sh.Id, v_3d.Id):
-                        erros.append("Vista '%s' nao pode ser adicionada a prancha." % v_3d.Name)
-                        continue
+                        # Cria em staging
+                        vp_leg = Viewport.Create(doc, sh.Id, leg_view.Id, XYZ(0, 0, 0))
+                        doc.Regenerate()
 
-                    placeholder_id = info.get("placeholder_id")
-                    vp_3d          = None
-                    vp_fantasma_id = None
+                        # Re-mede outline real após regenerate
+                        ol  = vp_leg.GetBoxOutline()
+                        w   = ol.MaximumPoint.X - ol.MinimumPoint.X
+                        h   = ol.MaximumPoint.Y - ol.MinimumPoint.Y
 
-                    if placeholder_id and Viewport.CanAddViewToSheet(doc, sh.Id, placeholder_id):
+                        # Centro: alinhado à direita, empilhando de baixo pra cima
+                        cx = target_x_max - (w / 2.0)
+                        cy = current_y + (h / 2.0)
+                        vp_leg.SetBoxCenter(XYZ(cx, cy, 0))
+                        doc.Regenerate()
+
+                        current_y += h + (gap_mm / 304.8)
+
+                        # Remove título do viewport da legenda
                         try:
-                            vp_fantasma = Viewport.Create(doc, sh.Id, placeholder_id, XYZ(10, 10, 0))
-                            doc.Regenerate()
-                            if vp_fantasma:
-                                vp_fantasma_id = vp_fantasma.Id
-                                vista_fantasma = doc.GetElement(placeholder_id)
-                                if vista_fantasma:
-                                    p_det_f = vista_fantasma.get_Parameter(
-                                        BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
-                                    if p_det_f and not p_det_f.IsReadOnly:
-                                        parts = vista_fantasma.Name.split()
-                                        if len(parts) > 1:
-                                            p_det_f.Set(parts[1])
-
-                            vp_3d = Viewport.Create(doc, sh.Id, v_3d.Id, XYZ(0, 0, 0))
-                            doc.Regenerate()
-                            if vp_3d:
-                                p_3d = v_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
-                                if p_3d and not p_3d.IsReadOnly:
-                                    parts = v_3d.Name.split()
-                                    if len(parts) > 1:
-                                        p_3d.Set(parts[1] + u"\u200b")
-                        except Exception as e_vp:
-                            erros.append("Aviso VP fantasma '%s': %s" % (v_3d.Name, str(e_vp)))
-                    else:
-                        try:
-                            vp_3d = Viewport.Create(doc, sh.Id, v_3d.Id, XYZ(0, 0, 0))
-                            doc.Regenerate()
-                            if vp_3d:
-                                p_3d = v_3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
-                                if p_3d and not p_3d.IsReadOnly:
-                                    parts = v_3d.Name.split()
-                                    if len(parts) > 1:
-                                        p_3d.Set(parts[1])
-                        except Exception as e_vp:
-                            erros.append("Aviso VP '%s': %s" % (v_3d.Name, str(e_vp)))
-
-                    if vp_3d and vp_type_id != ElementId.InvalidElementId:
-                        try:
-                            vp_3d.ChangeTypeId(vp_type_id)
-                            doc.Regenerate()
+                            tipos_vp = get_viewport_types()
+                            sem_titulo_id = ElementId.InvalidElementId
+                            for nome_vp, id_vp in tipos_vp.items():
+                                if remove_accents(nome_vp).upper() in ["SEM TITULO", "NO TITLE", "SEM CABECALHO"]:
+                                    sem_titulo_id = id_vp
+                                    break
+                            if sem_titulo_id != ElementId.InvalidElementId:
+                                vp_leg.ChangeTypeId(sem_titulo_id)
+                                doc.Regenerate()
                         except:
                             pass
 
-                    if vp_3d and vp_3d.IsValidObject:
-                        try:
-                            outline = vp_3d.GetBoxOutline()
-                            box_w   = outline.MaximumPoint.X - outline.MinimumPoint.X
-                            box_h   = outline.MaximumPoint.Y - outline.MinimumPoint.Y
-                            label_h = 0.0
-                            label_w = 0.0
-                            try:
-                                lbl_outline = vp_3d.GetLabelOutline()
-                                if lbl_outline is not None:
-                                    if lbl_outline.MinimumPoint.Y < outline.MinimumPoint.Y:
-                                        label_h = (lbl_outline.MaximumPoint.Y
-                                                   - lbl_outline.MinimumPoint.Y)
-                                    label_w = (lbl_outline.MaximumPoint.X
-                                               - lbl_outline.MinimumPoint.X)
-                            except:
-                                pass
+                    except Exception as e:
+                        erros_callout.append("Erro ao inserir legenda '{}': {}".format(leg_view.Name, str(e)))
 
-                            vp_infos.append({
-                                "vp":             vp_3d,
-                                "vp_id":          vp_3d.Id,
-                                "view_id":        v_3d.Id,
-                                "box_w":          box_w,
-                                "box_h":          box_h,
-                                "label_h":        label_h,
-                                "label_w":        label_w,
-                                "slot_w":         max(box_w, label_w),
-                                "slot_h":         box_h + max(label_h, LABEL_H_MIN),
-                                "nome":           v_3d.Name,
-                                "placeholder_id": placeholder_id,
-                                "vp_fantasma_id": vp_fantasma_id,
-                                "numero_detalhe": info["numero_detalhe"],
-                                "sh_id":          sh.Id,
-                            })
-                        except Exception as e_dim:
-                            erros.append("Aviso dimensao VP '%s': %s" % (v_3d.Name, str(e_dim)))
+            # ----------------------------------------------------------------
+            # PASSO 1 — Staging e medição dos viewports
+            # ----------------------------------------------------------------
+            vp_infos = []
 
-                t.Commit()
-            except Exception as e:
-                t.RollBack()
-                tg.RollBack()
-                forms.alert("Erro ao adicionar viewports: %s" % str(e))
-                script.exit()
+            for info in vistas_geradas:
+                v = doc.GetElement(info["id"])
+                if v is None:
+                    continue
+                if not Viewport.CanAddViewToSheet(doc, sheet.Id, v.Id):
+                    erros_callout.append("Vista '{}' nao pode ser adicionada a prancha.".format(v.Name))
+                    continue
 
-        if not vp_infos:
-            tg.Assimilate()
-            forms.alert("Nenhum viewport pôde ser criado.")
-            return
+                vp = Viewport.Create(doc, sheet.Id, v.Id, XYZ(0, 0, 0))
+                doc.Regenerate()
 
-        # ---------------------------------------------------------------
-        # FASE 3 — SHELF PACKING (cada operacao em transacao propria)
-        # ---------------------------------------------------------------
+                p_det = v.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                if p_det and not p_det.IsReadOnly:
+                    p_det.Set(v.Name.split()[1] if len(v.Name.split()) > 1 else v.Name)
+                doc.Regenerate()
 
-        # ---------------------------------------------------------------
-        # FASE 3 — GRID LAYOUT (max 9 por prancha, centralizado)
-        # ---------------------------------------------------------------
+                if vp_type_id != ElementId.InvalidElementId:
+                    vp.ChangeTypeId(vp_type_id)
+                    doc.Regenerate()
 
-        def _medir_vp(vp_obj):
-            bw = bh = lh = lw = 0.0
-            try:
-                ol = vp_obj.GetBoxOutline()
-                bw = ol.MaximumPoint.X - ol.MinimumPoint.X
-                bh = ol.MaximumPoint.Y - ol.MinimumPoint.Y
+                outline = vp.GetBoxOutline()
+                box_w   = outline.MaximumPoint.X - outline.MinimumPoint.X
+                box_h   = outline.MaximumPoint.Y - outline.MinimumPoint.Y
+                label_h = 0.0
+                label_w = 0.0
                 try:
-                    lbl_ol = vp_obj.GetLabelOutline()
+                    lbl_ol = vp.GetLabelOutline()
                     if lbl_ol is not None:
-                        if lbl_ol.MinimumPoint.Y < ol.MinimumPoint.Y:
-                            lh = lbl_ol.MaximumPoint.Y - lbl_ol.MinimumPoint.Y
-                        lw = lbl_ol.MaximumPoint.X - lbl_ol.MinimumPoint.X
+                        if lbl_ol.MinimumPoint.Y < outline.MinimumPoint.Y:
+                            label_h = lbl_ol.MaximumPoint.Y - lbl_ol.MinimumPoint.Y
+                        label_w = lbl_ol.MaximumPoint.X - lbl_ol.MinimumPoint.X
                 except:
                     pass
-            except:
-                pass
-            return bw, bh, lh, lw
 
-        def _recriar_vp_em(sh_dest, vi):
-            if vi.get("vp_fantasma_id"):
+                slot_w = max(box_w, label_w)
+                vp_infos.append({
+                    "vp":      vp,
+                    "view_id": v.Id,
+                    "box_w":   box_w,
+                    "box_h":   box_h,
+                    "label_h": label_h,
+                    "label_w": label_w,
+                    "slot_w":  slot_w,
+                    "slot_h":  box_h + max(label_h, LABEL_H_MIN),
+                    "nome":    v.Name,
+                })
+
+            if not vp_infos:
+                t.Commit()
+                tg.Assimilate()
+                forms.alert("Nenhum viewport pôde ser criado.")
+                return
+
+            # ----------------------------------------------------------------
+            # PASSO 2 — Bin packing
+            # ----------------------------------------------------------------
+            area_w = ux_max - ux_min
+            area_h = uy_max - uy_min
+
+            grupo_atual    = []
+            grupos_prancha = []
+
+            for vi in vp_infos:
+                grupo_atual.append(vi)
+                ref_sw_p = (sum(v["slot_w"] for v in grupo_atual) / len(grupo_atual)) * 1.2
+                ref_sh_p = (sum(v["slot_h"] for v in grupo_atual) / len(grupo_atual)) * 1.2
+                ncols_t  = max(1, int((area_w + espacamento) / (ref_sw_p + espacamento)))
+                nrows_t  = max(1, int((area_h + MARGEM_ENTRE_LINHAS) / (ref_sh_p + MARGEM_ENTRE_LINHAS)))
+                linhas_t = [grupo_atual[i:i+ncols_t] for i in range(0, len(grupo_atual), ncols_t)]
+                alt_reais = [max(v["slot_h"] for v in ln) for ln in linhas_t]
+                tot_h_real = sum(alt_reais) + MARGEM_ENTRE_LINHAS * (len(linhas_t) - 1)
+
+                if len(grupo_atual) > ncols_t * nrows_t or tot_h_real > area_h:
+                    grupos_prancha.append(grupo_atual[:-1])
+                    grupo_atual = [vi]
+
+            if grupo_atual:
+                grupos_prancha.append(grupo_atual)
+
+            # ----------------------------------------------------------------
+            # PASSO 3 — Posicionamento
+            # ----------------------------------------------------------------
+            def _recriar_vp_na_prancha(sh_dest, vi):
                 try:
-                    old_f = doc.GetElement(vi["vp_fantasma_id"])
-                    if old_f is not None:
-                        doc.Delete(vi["vp_fantasma_id"])
+                    doc.Delete(vi["vp"].Id)
+                    doc.Regenerate()
                 except:
                     pass
-                vi["vp_fantasma_id"] = None
-
-            old_vp = doc.GetElement(vi["vp_id"]) if vi.get("vp_id") else None
-            if old_vp is not None and old_vp.IsValidObject:
-                try:
-                    doc.Delete(vi["vp_id"])
-                except:
-                    pass
-            vi["vp"] = None
-
-            doc.Regenerate()
-
-            ph_id           = vi.get("placeholder_id")
-            new_vp          = None
-            new_fantasma_id = None
-
-            if ph_id and Viewport.CanAddViewToSheet(doc, sh_dest.Id, ph_id):
-                try:
-                    vp_f = Viewport.Create(doc, sh_dest.Id, ph_id, XYZ(10, 10, 0))
-                    if vp_f:
-                        new_fantasma_id = vp_f.Id
-                        vista_f = doc.GetElement(ph_id)
-                        if vista_f:
-                            p_det_f = vista_f.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
-                            if p_det_f and not p_det_f.IsReadOnly:
-                                parts = vista_f.Name.split()
-                                if len(parts) > 1:
-                                    p_det_f.Set(parts[1])
-                    new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
-                    if new_vp:
-                        v3d = doc.GetElement(vi["view_id"])
-                        if v3d:
-                            p_3d = v3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
-                            if p_3d and not p_3d.IsReadOnly:
-                                parts = v3d.Name.split()
-                                if len(parts) > 1:
-                                    p_3d.Set(parts[1] + u"\u200b")
-                except Exception as e:
-                    erros.append("Aviso recriar REF '%s': %s" % (vi["nome"], str(e)))
-            else:
-                try:
-                    new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
-                    v3d = doc.GetElement(vi["view_id"])
-                    if v3d:
-                        p_3d = v3d.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
-                        if p_3d and not p_3d.IsReadOnly:
-                            parts = v3d.Name.split()
-                            if len(parts) > 1:
-                                p_3d.Set(parts[1])
-                except Exception as e:
-                    erros.append("Aviso recriar VP '%s': %s" % (vi["nome"], str(e)))
-
-            doc.Regenerate()
-
-            if new_vp and new_vp.IsValidObject and vp_type_id != ElementId.InvalidElementId:
-                try:
+                new_vp = Viewport.Create(doc, sh_dest.Id, vi["view_id"], XYZ(0, 0, 0))
+                doc.Regenerate()
+                vista_elem = doc.GetElement(vi["view_id"])
+                if vista_elem:
+                    p_det = vista_elem.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)
+                    if p_det and not p_det.IsReadOnly:
+                        p_det.Set(vi["nome"].split()[1] if len(vi["nome"].split()) > 1 else vi["nome"])
+                doc.Regenerate()
+                if new_vp and vp_type_id != ElementId.InvalidElementId:
                     new_vp.ChangeTypeId(vp_type_id)
                     doc.Regenerate()
-                except:
-                    pass
-
-            if new_vp and new_vp.IsValidObject:
-                bw, bh, lh, lw = _medir_vp(new_vp)
-                vi["vp"]             = new_vp
-                vi["vp_id"]          = new_vp.Id
-                vi["box_w"]          = bw
-                vi["box_h"]          = bh
-                vi["label_h"]        = lh
-                vi["label_w"]        = lw
-                vi["slot_w"]         = max(bw, lw)
-                vi["slot_h"]         = bh + max(lh, LABEL_H_MIN)
-                vi["vp_fantasma_id"] = new_fantasma_id
-                vi["sh_id"]          = sh_dest.Id
-            else:
-                erros.append("Aviso: VP nao recriado para '%s'." % vi["nome"])
-
-        # ---------------------------------------------------------------
-        # Agrupa os VPs em paginas de ate 9
-        # ---------------------------------------------------------------
-        #MAX_POR_PRANCHA = 9
-        paginas = [vp_infos[i:i + max_por_prancha]
-           for i in range(0, len(vp_infos), max_por_prancha)]
-
-        # A primeira prancha ja foi criada; as demais serao criadas no loop
-        pranchas = [(sh, ux_min, ux_max, uy_min, uy_max, max_por_prancha)]
-
-        for idx_pag in range(1, len(paginas)):
-            with Transaction(doc, "AutoIso: Nova Prancha %d" % (idx_pag + 1)) as t_np:
-                t_np.Start()
-                try:
-                    nova_sh, nx_min, nx_max, ny_min, ny_max, max_pp = nova_prancha()
-                    t_np.Commit()
-                    pranchas.append((nova_sh, nx_min, nx_max, ny_min, ny_max, max_pp))
-                except Exception as e:
-                    t_np.RollBack()
-                    erros.append("Erro ao criar prancha %d: %s" % (idx_pag + 1, str(e)))
-                    pranchas.append(None)
-
-        # ---------------------------------------------------------------
-        # Para cada pagina: calcula grid otimo e posiciona
-        # ---------------------------------------------------------------
-        import math as _math
-
-        for idx_pag, grupo in enumerate(paginas):
-            if idx_pag >= len(pranchas) or pranchas[idx_pag] is None:
-                continue
-
-            sh_pag, ux_min_p, ux_max_p, uy_min_p, uy_max_p, max_pp = pranchas[idx_pag]
-            area_w = ux_max_p - ux_min_p
-            area_h = uy_max_p - uy_min_p
-            n      = len(grupo)
-
-            # --- Move VPs para a prancha correta (paginas > 0) ----------
-            if idx_pag > 0:
-                with Transaction(doc, "AutoIso: Mover VPs Prancha %d" % (idx_pag + 1)) as t_mv:
-                    t_mv.Start()
+                if new_vp:
+                    ol = new_vp.GetBoxOutline()
+                    bw = ol.MaximumPoint.X - ol.MinimumPoint.X
+                    bh = ol.MaximumPoint.Y - ol.MinimumPoint.Y
+                    lh = lw = 0.0
                     try:
-                        for vi in grupo:
-                            _recriar_vp_em(sh_pag, vi)
-                        doc.Regenerate()
-                        t_mv.Commit()
-                    except Exception as e:
-                        t_mv.RollBack()
-                        erros.append("Erro mover VPs prancha %d: %s" % (idx_pag + 1, str(e)))
-                        continue
+                        lbl_ol = new_vp.GetLabelOutline()
+                        if lbl_ol is not None and lbl_ol.MinimumPoint.Y < ol.MinimumPoint.Y:
+                            lh = lbl_ol.MaximumPoint.Y - lbl_ol.MinimumPoint.Y
+                        if lbl_ol is not None:
+                            lw = lbl_ol.MaximumPoint.X - lbl_ol.MinimumPoint.X
+                    except:
+                        pass
+                    vi["vp"]     = new_vp
+                    vi["box_w"]  = bw
+                    vi["box_h"]  = bh
+                    vi["label_h"] = lh
+                    vi["label_w"] = lw
+                    vi["slot_w"] = max(bw, lw)
+                    vi["slot_h"] = bh + max(lh, LABEL_H_MIN)
 
-            # --- Mede o maior slot do grupo (usa o maior para grid uniforme) ---
-            slot_w_max = max([vi["slot_w"] for vi in grupo]) if grupo else 0.0
-            slot_h_max = max([vi["slot_h"] for vi in grupo]) if grupo else 0.0
-            if slot_w_max <= 0 or slot_h_max <= 0:
-                erros.append("Aviso: dimensoes invalidas na pagina %d." % (idx_pag + 1))
-                continue
+            primeira_prancha = sheet
 
-           
-           
-            cols = min(3, n)
-            rows = int(_math.ceil(n / float(cols)))
+            for p_idx, grupo in enumerate(grupos_prancha):
+                if p_idx == 0:
+                    sh_atual = primeira_prancha
+                    ux_min_p, ux_max_p, uy_min_p, uy_max_p = ux_min, ux_max, uy_min, uy_max
+                    bb_sh_atual = bb_sh_primeira
+                else:
+                    sh_atual, ux_min_p, ux_max_p, uy_min_p, uy_max_p, bb_sh_atual = nova_prancha()
+                    for vi in grupo:
+                        _recriar_vp_na_prancha(sh_atual, vi)
 
-            # --- Espacamento uniforme (distribute evenly) ----------------
-            # Espaco sobrando apos alocar os slots
-            gap_x = ((area_w - cols * slot_w_max) / (cols + 1)
-                     if cols > 0 else 0.0)
-            gap_y = ((area_h - rows * slot_h_max) / (rows + 1)
-                     if rows > 0 else 0.0)
+                _inserir_legendas_na_prancha(sh_atual, bb_sh_atual)
 
-            # Garante espacamento minimo razoavel (pelo menos 2mm)
-            MIN_GAP = 2.0 * mm
-            gap_x = max(gap_x, MIN_GAP)
-            gap_y = max(gap_y, MIN_GAP)
+                area_w_p = ux_max_p - ux_min_p
+                area_h_p = uy_max_p - uy_min_p
 
-            # --- Posiciona cada VP no grid (esquerda->direita, cima->baixo) ---
-            with Transaction(doc, "AutoIso: Posicionar Grid Prancha %d" % (idx_pag + 1)) as t_pos:
-                t_pos.Start()
-                try:
-                    for i, vi in enumerate(grupo):
-                        vp = vi.get("vp")
-                        if vp is None and vi.get("vp_id"):
-                            vp_elem = doc.GetElement(vi["vp_id"])
-                            if vp_elem is not None and vp_elem.IsValidObject:
-                                vp = vp_elem
-                                vi["vp"] = vp
+                ref_sw_p = sum(vi["slot_w"] for vi in grupo) / len(grupo)
+                ncols    = max(1, int((area_w_p + espacamento) / (ref_sw_p + espacamento)))
+                linhas_g = [grupo[i:i + ncols] for i in range(0, len(grupo), ncols)]
+                n_lin    = len(linhas_g)
+                alt_lins = [max(vi["slot_h"] for vi in ln) for ln in linhas_g]
+                tot_h    = sum(alt_lins)
 
-                        if vp is None or not vp.IsValidObject:
-                            erros.append("Aviso: VP invalido '%s', pulando." % vi["nome"])
-                            continue
+                espaco_restante_y = area_h_p - tot_h
+                if n_lin > 1 and espaco_restante_y > 0:
+                    gap_y = min(22.0 * mm, max(MARGEM_ENTRE_LINHAS, espaco_restante_y / float(n_lin - 1)))
+                else:
+                    gap_y = MARGEM_ENTRE_LINHAS
 
-                        col_idx = i % cols
-                        row_idx = i // cols
+                cur_y_p = uy_max_p
 
-                        # Centro do slot na prancha
-                        # Eixo X: gap + (col * (slot_w + gap)) + slot_w/2
-                        cx = (ux_min_p
-                              + gap_x
-                              + col_idx * (slot_w_max + gap_x)
-                              + slot_w_max / 2.0)
+                for l_idx, linha in enumerate(linhas_g):
+                    rh_max = alt_lins[l_idx]
+                    n_col  = len(linha)
+                    tot_w  = sum(vi["slot_w"] for vi in linha)
 
-                        # Eixo Y: topo da area - gap - (row * (slot_h + gap)) - slot_h/2
-                        # O topo do box (sem label) e cy + box_h/2
-                        cy_slot_top = (uy_max_p
-                                       - gap_y
-                                       - row_idx * (slot_h_max + gap_y))
+                    if n_col > 1:
+                        gap_x = min(20.0 * mm, max(espacamento, (area_w_p - tot_w) / float(n_col - 1)))
+                    else:
+                        gap_x = 0.0
 
+                    bloco_w = tot_w + gap_x * (n_col - 1)
+                    cur_x_p = max(ux_min_p, ux_min_p + (area_w_p - bloco_w) / 2.0)
+                    base_y  = cur_y_p - rh_max
+
+                    for vi in linha:
                         try:
+                            vp = vi["vp"]
+                            if vp is None:
+                                continue
                             ol = vp.GetBoxOutline()
-                            # Queremos que ol.MaximumPoint.Y == cy_slot_top
-                            delta_x = cx - (ol.MinimumPoint.X + vi["box_w"] / 2.0)
-                            delta_y = cy_slot_top - ol.MaximumPoint.Y
                             DB.ElementTransformUtils.MoveElement(
-                                doc, vp.Id, XYZ(delta_x, delta_y, 0))
-                            try:
-                                vp.LabelOffset = XYZ(0.0, -GAP_LABEL, 0.0)
-                            except:
-                                pass
-                        except Exception as e_mv:
-                            erros.append("Erro posicionar '%s': %s" % (vi["nome"], str(e_mv)))
+                                doc, vp.Id,
+                                XYZ(cur_x_p - ol.MinimumPoint.X,
+                                    base_y  - ol.MinimumPoint.Y, 0))
+                            vp.LabelOffset = XYZ(0.0, -(10/304.8), 0.0)
+                            doc.Regenerate()
+                        except Exception as e:
+                            erros_callout.append("Erro ao posicionar vista '{}': {}".format(vi["nome"], str(e)))
+                        cur_x_p += vi["slot_w"] + gap_x
 
-                    doc.Regenerate()
-                    t_pos.Commit()
-                except Exception as e:
-                    t_pos.RollBack()
-                    erros.append("Erro ao posicionar grid prancha %d: %s" % (idx_pag + 1, str(e)))
+                    cur_y_p -= (rh_max + gap_y)
 
-        # Finaliza o TransactionGroup
+            t.Commit()
         tg.Assimilate()
 
-    msg = "Concluido! %d isometrico(s) criado(s) e paginado(s)." % len(vistas_geradas)
-    if erros:
-        msg += "\n\nAvisos (%d):\n%s" % (len(erros), "\n".join(erros))
+    tempo = time.time() - inicio
+    mins  = int(tempo // 60)
+    segs  = int(tempo % 60)
+    msg   = "Concluido! {} vistas criadas e paginadas.".format(len(vistas_geradas))
+    msg  += "\n\nTempo de execução: {}m {}s".format(mins, segs)
+    if erros_callout:
+        msg += "\n\nAvisos ({}):\n{}".format(len(erros_callout), "\n".join(erros_callout))
     forms.alert(msg)
 
-
 if __name__ == '__main__':
-    executar_fluxo_isometrico()
+    executar_fluxo_callout()
