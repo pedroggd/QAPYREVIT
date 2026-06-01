@@ -923,7 +923,7 @@ def executar_fluxo_callout():
                 doc.Regenerate()
 
                 # Calcula ux_max dinamicamente: viewport do carimbo mais à esquerda - 5mm
-                ux_max_calc = bb_sh.Max.X - (175.0 * mm)
+                ux_max_calc = bb_sh.Max.X - (210.0 * mm)
                 try:
                     vps_carimbo = (FilteredElementCollector(doc, sh.Id)
                                    .OfClass(Viewport)
@@ -1043,12 +1043,20 @@ def executar_fluxo_callout():
             for vi in vp_infos:
                 grupo_atual.append(vi)
 
-                ref_sw_p = max(v["slot_w"] for v in grupo_atual) 
-                ref_sh_p = max(v["slot_h"] for v in grupo_atual) 
+                ref_sw_p = (sum(v["slot_w"] for v in grupo_atual) / len(grupo_atual)) * 1.2
+                ref_sh_p = (sum(v["slot_h"] for v in grupo_atual) / len(grupo_atual)) * 1.2
                 ncols_t = max(1, int((area_w + espacamento) / (ref_sw_p + espacamento)))
                 nrows_t = max(1, int((area_h + MARGEM_ENTRE_LINHAS) / (ref_sh_p + MARGEM_ENTRE_LINHAS)))
 
-                if len(grupo_atual) > ncols_t * nrows_t:
+                linhas_teste = [grupo_atual[i:i+ncols_t] for i in range(0, len(grupo_atual), ncols_t)]
+                alt_reais = [max(v["slot_h"] for v in ln) for ln in linhas_teste]
+                n_lin_teste = len(linhas_teste)
+                tot_h_real = sum(alt_reais) + MARGEM_ENTRE_LINHAS * (n_lin_teste - 1)
+
+                nao_cabe_grade = len(grupo_atual) > ncols_t * nrows_t
+                nao_cabe_altura = tot_h_real > area_h
+
+                if nao_cabe_grade or nao_cabe_altura:
                     grupos_prancha.append(grupo_atual[:-1])
                     grupo_atual = [vi]
 
@@ -1131,12 +1139,17 @@ def executar_fluxo_callout():
                 tot_h    = sum(alt_lins)
 
                 # gap_y uniforme, nunca menor que MARGEM_ENTRE_LINHAS
-                GAP_Y_MAX = 40.0 * mm
-                if n_lin > 1:
-                    gap_y = min(GAP_Y_MAX, max(MARGEM_ENTRE_LINHAS,
-                                (area_h_p - tot_h) / float(n_lin - 1)))
+                espaco_restante_y = area_h_p - tot_h
+                if n_lin > 1 and espaco_restante_y > 0:
+                     gap_y = min(
+                         22.0 * mm,
+                         max(MARGEM_ENTRE_LINHAS, espaco_restante_y / float(n_lin - 1))
+                     )
                 else:
-                    gap_y = 0.0
+                     gap_y = MARGEM_ENTRE_LINHAS
+
+                altura_total_bloco = tot_h + gap_y * (n_lin - 1)
+                cur_y_p = uy_min_p + area_h_p - (area_h_p - altura_total_bloco) / 2.0
 
                 # Começa do topo da área útil (sem centralização vertical)
                 cur_y_p = uy_max_p
@@ -1156,7 +1169,7 @@ def executar_fluxo_callout():
 
                     # Centraliza horizontalmente
                     bloco_w = tot_w + gap_x * (n_col - 1)
-                    cur_x_p = ux_min_p + (area_w_p - bloco_w) / 2.0
+                    cur_x_p = cur_x_p = max(ux_min_p, ux_min_p + (area_w_p - bloco_w) / 2.0)
                     base_y = cur_y_p - rh_max
 
                     for vi in linha:

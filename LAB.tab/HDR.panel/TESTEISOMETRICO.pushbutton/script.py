@@ -593,7 +593,7 @@ def executar_fluxo_isometrico():
         paisagem = w_mm > h_mm
         area = w_mm * h_mm
         if area > 900000:
-            return 12 if paisagem else 15
+            return 9 if paisagem else 9
         elif area > 450000:
             return 6 if paisagem else 6
         else:
