@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__title__ = "AutoIso3D\n+"
+__title__ = "HDR-Isométrico\nAutomático+"
 __author__ = "PyRevit Plugin"
 
 import clr

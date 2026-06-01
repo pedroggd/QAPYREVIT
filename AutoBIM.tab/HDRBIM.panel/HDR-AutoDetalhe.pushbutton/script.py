@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__title__ = "HDR-Detalhe Automático+\n"
+__title__ = "HDR-Detalhe\nAutomático+\n"
 __author__ = "PyRevit Plugin"
 
 import clr
