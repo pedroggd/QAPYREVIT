@@ -974,9 +974,9 @@ def executar_fluxo_callout():
             margem_sup          = 15.0 * mm
             margem_inf          = 15.0 * mm
             MARGEM_CORTE        = 5.0  * mm
-            espacamento         = 10.0 * mm
-            MARGEM_ENTRE_LINHAS = 20.0 * mm
-            LABEL_H_MIN         = 15.0 * mm
+            espacamento         = 6.0 * mm
+            MARGEM_ENTRE_LINHAS = 12.0 * mm
+            LABEL_H_MIN         = 12.0 * mm
 
             def nova_prancha():
                 sh = ViewSheet.Create(doc, tb_type_id)
@@ -1045,7 +1045,7 @@ def executar_fluxo_callout():
             # ----------------------------------------------------------------
             def _inserir_legendas_na_prancha(sh, bb_sh):
                 if not legendas_views:
-                    return
+                    return None
 
                 doc.Regenerate()
                 margem_dir_mm  = 9.0
@@ -1056,6 +1056,7 @@ def executar_fluxo_callout():
                 target_x_max = bb_sh.Max.X - (margem_dir_mm / 304.8)
                 # Âncora Y: topo do selo + margem configurada pelo usuário
                 current_y = bb_sh.Min.Y + (altura_selo_mm / 304.8) + (margem_legenda * mm)
+                leg_x_min = target_x_max  # vai rastrear o X mais à esquerda das legendas
 
                 for leg_view in legendas_views:
                     if leg_view is None:
@@ -1080,6 +1081,7 @@ def executar_fluxo_callout():
                         vp_leg.SetBoxCenter(XYZ(cx, cy, 0))
                         doc.Regenerate()
 
+                        leg_x_min = min(leg_x_min, target_x_max - w)
                         current_y += h + (gap_mm / 304.8)
 
                         # Remove título do viewport da legenda
@@ -1098,6 +1100,9 @@ def executar_fluxo_callout():
 
                     except Exception as e:
                         erros_callout.append("Erro ao inserir legenda '{}': {}".format(leg_view.Name, str(e)))
+
+                # Retorna: topo das legendas (Y) e borda esquerda delas (X)
+                return current_y, leg_x_min
 
             # ----------------------------------------------------------------
             # PASSO 1 — Staging e medição dos viewports
@@ -1168,8 +1173,8 @@ def executar_fluxo_callout():
 
             for vi in vp_infos:
                 grupo_atual.append(vi)
-                ref_sw_p = (sum(v["slot_w"] for v in grupo_atual) / len(grupo_atual)) * 1.2
-                ref_sh_p = (sum(v["slot_h"] for v in grupo_atual) / len(grupo_atual)) * 1.2
+                ref_sw_p = (sum(v["slot_w"] for v in grupo_atual) / len(grupo_atual)) * 1.05
+                ref_sh_p = (sum(v["slot_h"] for v in grupo_atual) / len(grupo_atual)) * 1.05
                 ncols_t  = max(1, int((area_w + espacamento) / (ref_sw_p + espacamento)))
                 nrows_t  = max(1, int((area_h + MARGEM_ENTRE_LINHAS) / (ref_sh_p + MARGEM_ENTRE_LINHAS)))
                 linhas_t = [grupo_atual[i:i+ncols_t] for i in range(0, len(grupo_atual), ncols_t)]
@@ -1236,7 +1241,11 @@ def executar_fluxo_callout():
                     for vi in grupo:
                         _recriar_vp_na_prancha(sh_atual, vi)
 
-                _inserir_legendas_na_prancha(sh_atual, bb_sh_atual)
+                resultado_leg = _inserir_legendas_na_prancha(sh_atual, bb_sh_atual)
+                if resultado_leg is not None:
+                    topo_leg, x_esq_leg = resultado_leg
+                    uy_min_p = max(uy_min_p, topo_leg + (5.0 * mm))
+                    ux_max_p = min(ux_max_p, x_esq_leg - (5.0 * mm))
 
                 area_w_p = ux_max_p - ux_min_p
                 area_h_p = uy_max_p - uy_min_p
