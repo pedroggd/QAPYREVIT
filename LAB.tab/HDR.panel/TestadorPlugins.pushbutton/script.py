@@ -51,12 +51,14 @@ ESCALAS_VALIDAS = [50, 75, 100]
 
 SIGLA_TO_PARAM = {
     "EE":   "Projeto de Elétrica",
-    "PE":   "Projeto de PE",
+    "HID": "Projeto de Hidráulica",
+    "PE":   "Projeto de Elétrica",
     "EP":   "Projeto de PE",
     "TE":   "Projeto de Comunicação",
     "TP":   "Projeto de TP",
     "SPDA": "Projeto de SPDA",
-    "SDAI": "Projeto de SDAI"
+    "SDAI": "Projeto de SDAI",
+    "ELE": "Projeto de Elétrica"
 }
 
 PARAM_DISC_MATCH = {
@@ -84,17 +86,61 @@ PARAM_DISC_MATCH = {
 
 PARAMS_CARIMBO = [
     ("Número do Logo",  "Número do Logo"),
-    ("OBRA",            "Obra"),
-    ("CLIENTE",         "Nome do Cliente"),
-    ("LOCAL",           "Local"),
-    ("PROJETISTA",      "Designed By"),
-    ("DOCUMENTACAO",    "Drawn By"),
-    ("COORDENADOR",     "Checked By"),
-    ("APROVADOR",       "Approved By"),
-    ("ARQ_CONSTRUTORA", "Arq. Construtora"),
-    ("ARQ_PROJETISTA",  "Arq. Projetista"),
-    ("EMISSAO_INICIAL", "Sheet Issue Date"),
+    ("Obra",            "Building Name"),
+ #   ("Cliente",         "Client Name"),
+    ("Local",           "Project Address"),
+    ("Projetista",      "Designed By"),
+    ("Documentação",    "Drawn By"),
+    ("Coordenador",     "Checked By"),
+    ("Aprovador",       "Approved By"),
+    #("Arquivo Construtora", "Project Number"),
+    #("Arquivo Projetista",  "Project Number"),
+    ("Emissão Inicial", "Sheet Issue Date"),
 ]
+
+
+CLIENTES = [
+    "-",
+    "A. YOSHII ENGENHARIA E CONSTRUÇÕES LTDA.",#1
+    "YTICON CONSTRUÇÃO E INCORPORAÇÃO LTDA.",#2
+    "PRIDE CONSTRUTORA E INCORPORADORA",#3
+    "BRAVO",#4
+    "WEGG",#5
+    "VECTRA CONSTRUTORA",
+    "VANGUARD HOME EMPREENDIMENTOS LTDA.",#7
+    "PLAENGE",#8
+    "XR EMPREENDIMENTOS IMOBILIÁRIOS LTDA.",#9
+    "CATAMARÁ ENGENHARIA E EMPREENDIMENTOS LTDA.",#10
+    "GRP",#11
+    "CONSTRUTORA PIACENTINI",#11
+    "CONSTRUTORA LOTUS",#12
+    "MUNICÍPIO DE CRAVINHOS",#13
+    "A. YOSHII MARINGÁ ENGENHARIA LTDA.",#14
+    "E.S.M. EMPREENDIMENTOS IMOBILIÁRIOS SPE LTDA.",#15
+    "LYX PARTICIPAÇÕES E EMPREENDIMENTOS S/A",#16
+    "PADRE ANCHIETA EMPREENDIMENTOS IMOBILIÁRIOS S.A.",#17
+    "EQUILÍBRIO CONSTRUÇÃO CIVIL",#18
+    "CONSTRUTORA RAZENTE LTDA",#19
+]
+
+NUMEROS_LOGO = [str(i) for i in range(1, 21)]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 NOMES_PARAM_TITULO = ["HDR-Título", "HDR-Titulo", "TÍTULO", "TITULO"]
 
@@ -1282,14 +1328,32 @@ class CriarPranchasWindow(Window):
             Grid.SetColumn(lbl, 0)
             g.Children.Add(lbl)
 
-            txt = TextBox()
-            txt.FontSize = 11
-            txt.Padding = Thickness(6, 4, 6, 4)
-            Grid.SetColumn(txt, 1)
-            g.Children.Add(txt)
+            if label_text == "Client Name":
+                ctrl = ComboBox()
+                ctrl.FontSize = 11
+                for nome in CLIENTES:
+                    item = ComboBoxItem()
+                    item.Content = nome
+                    ctrl.Items.Add(item)
+                ctrl.SelectedIndex = 0
+            elif label_text == "Número do Logo":
+                    ctrl = ComboBox()
+                    ctrl.FontSize = 11
+                    for i, nome_cliente in enumerate(CLIENTES[1:], start=1):
+                        item = ComboBoxItem()
+                        item.Content = "{} - {}".format(i, nome_cliente)
+                        ctrl.Items.Add(item)
+                    ctrl.SelectedIndex = 0
+            else:
+                ctrl = TextBox()
+                ctrl.FontSize = 11
+                ctrl.Padding = Thickness(6, 4, 6, 4)
+
+            Grid.SetColumn(ctrl, 1)
+            g.Children.Add(ctrl)
 
             outer.Children.Add(g)
-            self.campos_carimbo[label_text] = txt
+            self.campos_carimbo[label_text] = ctrl
         
         outer.Children.Add(self._sep(8))
         self._lbl(outer, "Tipo de Viewport (Titulo da Vista Principal)", 12, bold=True, mg=(0,0,0,6))
@@ -1375,10 +1439,22 @@ class CriarPranchasWindow(Window):
             return
 
         dados_carimbo = {}
-        for param_name, txt in self.campos_carimbo.items():
-            valor = txt.Text.strip()
-            if valor: dados_carimbo[param_name] = valor
+        for param_name, ctrl in self.campos_carimbo.items():
+            if isinstance(ctrl, ComboBox):
+                item = ctrl.SelectedItem
+                valor = item.Content if item else ""
+            else:
+                valor = ctrl.Text.strip()
+            if valor and valor != "-":
+                dados_carimbo[param_name] = valor
 
+        # Propaga o nome do cliente a partir do Número do Logo
+        logo_valor = dados_carimbo.get("Número do Logo", "")
+        if logo_valor and " - " in logo_valor:
+            nome_cliente = logo_valor.split(" - ", 1)[1]
+            partes = logo_valor.split(" - ", 1)
+            dados_carimbo["Client Name"] = nome_cliente
+            dados_carimbo["Número do Logo"] = partes[0].strip()
         idx_vp = self.combo_vp_type.SelectedIndex
         vp_type_id_selecionado = None
         if idx_vp >= 0 and idx_vp < len(self._vp_type_ids_list):
@@ -1524,9 +1600,17 @@ def executar_fluxo_excel_wpf():
                 sheet.SheetNumber = numero 
                 sheet.Name = nome_arquivo
                 doc.Regenerate()
-                
+
                 carimbos = FilteredElementCollector(doc, sheet.Id).OfCategory(BuiltInCategory.OST_TitleBlocks).ToElements()
                 tb_instance = carimbos[0] if carimbos else None
+
+                # Grava Arquivo Construtora/Projetista DEPOIS que tb_instance existe
+                for param_arquivo in ["Project Number", "Arquivo Construtora", "Arquivo Projetista"]:
+                    p = sheet.LookupParameter(param_arquivo)
+                    if not p and tb_instance:
+                        p = tb_instance.LookupParameter(param_arquivo)
+                    if p and not p.IsReadOnly and p.StorageType == StorageType.String:
+                        p.Set(nome_arquivo)
 
                 legendas_desta_prancha = item.get("legendas_desta_prancha", [])
                 legend_data = []
@@ -1579,7 +1663,15 @@ def executar_fluxo_excel_wpf():
                     if orig_template_pre != DB.ElementId.InvalidElementId: nova_vista.ViewTemplateId = orig_template_pre
                 except: pass
 
+                ARQUIVO_PARAMS = ["Project Number", "Número do Arquivo", 
+                                  "Arquivo Construtora", "Arquivo Projetista"]
+
                 for param_name, valor in dados_carimbo.items():
+                    if param_name in ARQUIVO_PARAMS:
+                        continue
+                    if not valor:
+                        continue
+
                     p = sheet.LookupParameter(param_name)
                     if not p and tb_instance: p = tb_instance.LookupParameter(param_name)
                     if not p: p = doc.ProjectInformation.LookupParameter(param_name)
@@ -1587,7 +1679,9 @@ def executar_fluxo_excel_wpf():
                     if p and not p.IsReadOnly:
                         if p.StorageType == StorageType.String: p.Set(str(valor))
                         elif p.StorageType == StorageType.Integer:
-                            try: p.Set(int(valor))
+                            try:
+                                valor_int = int(str(valor).split("-")[0].strip())
+                                p.Set(valor_int)
                             except: pass
                         elif p.StorageType == StorageType.Double:
                             try: p.Set(float(valor))
